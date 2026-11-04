@@ -60,6 +60,13 @@
   #detail dl { display:grid; grid-template-columns:auto 1fr; gap:3px 10px; margin:0; font-size:11px; }
   #detail dt { color:var(--muted); } #detail dd { margin:0; text-align:right; }
   #detail .close { position:absolute; top:7px; right:10px; cursor:pointer; color:var(--muted); }
+  /* Vignettage et grain : deux calques CSS, pas du post-traitement. Ils ne coutent
+     rien a la carte graphique et suffisent a poser l'image. */
+  #vignette { position:fixed; inset:0; pointer-events:none; z-index:3;
+    background:radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0) 42%, rgba(12,7,4,.5) 100%); }
+  #grain { position:fixed; inset:0; pointer-events:none; z-index:4; opacity:.05;
+    background-repeat:repeat; mix-blend-mode:overlay; }
+  #vol { width:84px; accent-color:#e0a95c; vertical-align:middle; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -73,12 +80,16 @@
 <div id="labels"></div>
 <div id="hud"><span class="pill">Claude Office</span><span id="status" class="pill">Connexion…</span>
 <span id="sound" class="pill btn" role="button" aria-pressed="false" title="Son des appels">🔕 Son</span>
+<span id="wx" class="pill" hidden></span>
+<span id="usage" class="pill" hidden></span>
+<input id="vol" type="range" min="0" max="100" value="35" hidden title="Volume de l'ambiance">
 <span id="unfocus" class="pill btn" role="button" hidden>⤢ Tout voir</span></div>
 <div id="hint">En attente de Claude Code…<br><small>lance <code>claude</code> dans un terminal</small></div>
 <div id="sessions"><h4>Sessions</h4><div id="sessions-list"></div></div>
 <div id="detail"><span class="close" id="detail-close">✕</span><h4 id="detail-title"></h4>
 <div class="sub" id="detail-sub"></div><dl id="detail-body"></dl></div>
 <div id="log"></div>
+<div id="vignette"></div><div id="grain"></div>
 
 <script type="module">
 import * as THREE from 'three';
@@ -99,6 +110,9 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.getElementById('stage').appendChild(renderer.domElement);
+// Declare ici, rempli bien plus bas : resize() y touche, et un let en zone morte
+// leverait une erreur meme teste par typeof.
+let composer = null;
 
 const cam = new THREE.OrthographicCamera();
 cam.position.set(12, 12, 12);
@@ -114,6 +128,7 @@ let camSpan = 8.5;
 const camTarget = new V3();
 
 function resize() {
+  if (composer) composer.setSize(innerWidth, innerHeight);
   const w = innerWidth, h = innerHeight, a = w / h;
   const s = Math.max(camSpan, camSpan * 1.4 / a);
   renderer.setSize(w, h);
@@ -143,12 +158,167 @@ const DAYLIGHT = [
   { h: 20, sun: 0xd08a5a, i: .5,  sky: 0x8a6a62, amb: .15, win: 0xff9f55, wi: .6 },
   { h: 24, sun: 0x5a6a8a, i: .18, sky: 0x3b4560, amb: .1,  win: 0x2f3c55, wi: .25 },
 ];
-const windowPanes = [];
-function applyDaylight() {
-  const forced = Number(params.get('hour'));
+
+/* ---------- Horloge de la scene ---------- */
+// Par defaut l'heure systeme. `?hour=21` la fige, `?clock=120` fait defiler une
+// journee entiere en 120 secondes — indispensable pour regler l'ambiance sans
+// attendre le coucher du soleil.
+const FIXED_HOUR = params.has('hour') && Number.isFinite(Number(params.get('hour')))
+  ? ((Number(params.get('hour')) % 24) + 24) % 24 : null;
+const CLOCK_SPEED = Number(params.get('clock')) || 0;
+function nowHours(t) {
+  if (FIXED_HOUR !== null) return FIXED_HOUR;
+  if (CLOCK_SPEED > 0) return (t / CLOCK_SPEED * 24) % 24;
   const d = new Date();
-  const hour = Number.isFinite(forced) && params.has('hour')
-    ? forced : d.getHours() + d.getMinutes() / 60;
+  return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+}
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/* ---------- Meteo ---------- */
+// Lever et coucher viennent du serveur, donc de la vraie ville : des heures fixes
+// seraient fausses de trois heures entre decembre et juin.
+let SUN_H = { rise: 7.5, set: 18.5 };
+const WX = { kind: 'clear', clouds: 0, code: null, temp: null, city: null, wind: 0, offline: true };
+
+// Codes WMO d'Open-Meteo, ramenes aux cinq temps que la scene sait dessiner.
+function wxKind(code) {
+  if (code <= 1) return 'clear';
+  if (code === 45 || code === 48) return 'fog';
+  if (code >= 95) return 'storm';
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return 'snow';
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return 'rain';
+  return 'cloud';
+}
+const hourOfISO = (iso) => { const m = /T(\d\d):(\d\d)/.exec(String(iso)); return m ? +m[1] + +m[2] / 60 : null; };
+
+/* ---------- Le ciel derriere les fenetres ---------- */
+// Une seule texture pour les deux fenetres : c'est le meme dehors. Redessinee par
+// intermittence seulement — a 10 images par seconde quand il pleut ou qu'il neige,
+// et sinon uniquement quand quelque chose a change.
+const skyCv = document.createElement('canvas');
+skyCv.width = 320; skyCv.height = 180;
+const skyCtx = skyCv.getContext('2d');
+const skyTex = new THREE.CanvasTexture(skyCv);
+skyTex.anisotropy = 4;
+let skyDirty = true, skyLast = -9;
+
+// Silhouette de ville, tiree une fois : la redessiner au hasard a chaque image la
+// ferait grouiller. Les memes immeubles doivent rester les memes.
+const SKYLINE = (() => {
+  const out = []; let bx = -8;
+  for (let i = 0; bx < 332; i++) {
+    const w = 16 + ((i * 37) % 28), h = 26 + ((i * 53) % 66);
+    out.push({ x: bx, w, h, seed: i });
+    bx += w + 3 + (i % 3);
+  }
+  return out;
+})();
+
+function drawSky(h, t) {
+  const W = skyCv.width, H = skyCv.height, x = skyCtx;
+  const night = h < SUN_H.rise - .5 || h > SUN_H.set + .5;
+  const golden = !night && (h < SUN_H.rise + 1.3 || h > SUN_H.set - 1.3);
+  const k = WX.kind;
+
+  const g = x.createLinearGradient(0, 0, 0, H);
+  if (night) { g.addColorStop(0, '#0b1120'); g.addColorStop(1, '#223049'); }
+  else if (golden) { g.addColorStop(0, '#52618c'); g.addColorStop(.5, '#d59061'); g.addColorStop(1, '#f2bc84'); }
+  else if (k === 'clear') { g.addColorStop(0, '#5a9ed6'); g.addColorStop(1, '#c6e3f4'); }
+  else if (k === 'fog') { g.addColorStop(0, '#aeb4b8'); g.addColorStop(1, '#d2d6d8'); }
+  else { g.addColorStop(0, '#8b97a4'); g.addColorStop(1, '#c2c9d0'); }
+  x.fillStyle = g; x.fillRect(0, 0, W, H);
+
+  // Immeubles, puis leurs fenetres : deux passes, pour ne pas jongler avec le style.
+  x.fillStyle = night ? '#070b14' : 'rgba(44,52,66,.5)';
+  for (const b of SKYLINE) x.fillRect(b.x, H - b.h, b.w, b.h);
+  if (night) {
+    x.fillStyle = '#ffce84';
+    for (const b of SKYLINE) {
+      for (let r = 0; r * 9 < b.h - 10; r++) {
+        for (let c = 0; c * 6 < b.w - 6; c++) {
+          // Allumage stable dans le temps, mais quelques fenetres clignotent lentement.
+          const seed = (b.seed * 17 + r * 13 + c * 29) % 11;
+          if (seed > 3) continue;
+          if (seed === 3 && Math.sin(t * .3 + b.seed + r) < .3) continue;
+          x.fillRect(b.x + 3 + c * 6, H - b.h + 6 + r * 9, 3, 5);
+        }
+      }
+    }
+  }
+
+  // Nuages : des galets flous, d'autant plus bas et denses que le ciel est couvert.
+  if (k !== 'clear') {
+    const n = 3 + Math.round(WX.clouds * 6);
+    x.fillStyle = night ? 'rgba(90,104,128,.45)' : 'rgba(255,255,255,.5)';
+    for (let i = 0; i < n; i++) {
+      const cx = ((i * 71 + t * 2.2) % (W + 90)) - 45;
+      const cy = 14 + ((i * 29) % 46);
+      const rr = 13 + ((i * 17) % 16);
+      x.beginPath();
+      x.arc(cx, cy, rr, 0, Math.PI * 2);
+      x.arc(cx + rr * .8, cy + 4, rr * .72, 0, Math.PI * 2);
+      x.arc(cx - rr * .8, cy + 5, rr * .62, 0, Math.PI * 2);
+      x.fill();
+    }
+  }
+
+  if (k === 'fog') { x.fillStyle = 'rgba(214,218,220,.55)'; x.fillRect(0, 0, W, H); }
+
+  // Pluie : des traits obliques, plus serres qu'on ne croit — c'est la densite qui
+  // fait lire la pluie, pas la taille des gouttes.
+  if (k === 'rain' || k === 'storm') {
+    x.strokeStyle = 'rgba(206,224,240,.5)'; x.lineWidth = 1;
+    const n = k === 'storm' ? 150 : 100;
+    for (let i = 0; i < n; i++) {
+      const sx = (i * 61 + t * 150) % (W + 60) - 30;
+      const sy = (i * 97 + t * 420) % (H + 40) - 20;
+      x.beginPath(); x.moveTo(sx, sy); x.lineTo(sx - 4, sy + 13); x.stroke();
+    }
+    if (k === 'storm' && Math.sin(t * .7) > .994) { // un eclair, rarement
+      x.fillStyle = 'rgba(255,255,255,.75)'; x.fillRect(0, 0, W, H);
+    }
+  }
+
+  // Neige : des flocons qui tombent lentement et derivent.
+  if (k === 'snow') {
+    x.fillStyle = 'rgba(255,255,255,.85)';
+    for (let i = 0; i < 90; i++) {
+      const sx = ((i * 53 + Math.sin(t * .6 + i) * 14) % (W + 20)) - 10;
+      const sy = (i * 83 + t * 34) % (H + 20) - 10;
+      x.beginPath(); x.arc(sx, sy, 1 + (i % 3) * .5, 0, Math.PI * 2); x.fill();
+    }
+  }
+
+  // Sur la vitre elle-meme : des gouttes immobiles, et quelques-unes qui coulent.
+  if (k === 'rain' || k === 'storm') {
+    x.fillStyle = 'rgba(226,240,252,.3)';
+    for (let i = 0; i < 46; i++) {
+      const dx = (i * 97) % W, dy = (i * 131) % H;
+      x.beginPath(); x.arc(dx, dy, 1 + (i % 3), 0, Math.PI * 2); x.fill();
+    }
+    x.strokeStyle = 'rgba(226,240,252,.34)'; x.lineWidth = 2;
+    for (let i = 0; i < 9; i++) {
+      const dx = (i * 71) % W;
+      const dy = ((i * 53 + t * 26) % (H + 30)) - 15;
+      x.beginPath(); x.moveTo(dx, dy); x.lineTo(dx, dy + 16 + (i % 4) * 7); x.stroke();
+    }
+  }
+  skyTex.needsUpdate = true;
+}
+
+const windowPanes = [];
+// Niveau d'allumage des suspensions, 0 a 1. Elles s'allument avant qu'il fasse nuit
+// noire, comme dans un vrai bureau, et restent un peu allumees en plein jour si le
+// ciel est couvert — c'est exactement ce qu'on fait chez soi.
+function lampLevel(hour) {
+  const m = 1.1; // la transition dure environ deux heures
+  const up = clamp01((hour - (SUN_H.rise - m)) / (2 * m));
+  const down = clamp01(((SUN_H.set + m) - hour) / (2 * m));
+  const day = Math.min(up, down); // 1 en plein jour, 0 la nuit
+  return Math.max(1 - day, WX.clouds * .5 * day);
+}
+
+function applyDaylight(hour) {
   let a = DAYLIGHT[0], b = DAYLIGHT[DAYLIGHT.length - 1];
   for (let i = 0; i < DAYLIGHT.length - 1; i++) {
     if (hour >= DAYLIGHT[i].h && hour <= DAYLIGHT[i + 1].h) { a = DAYLIGHT[i]; b = DAYLIGHT[i + 1]; break; }
@@ -159,9 +329,28 @@ function applyDaylight() {
   sun.color.copy(lerpHex(a.sun, b.sun)); sun.intensity = num(a.i, b.i);
   if (hemi) hemi.color.copy(lerpHex(a.sky, b.sky));
   ambient.intensity = num(a.amb, b.amb);
+  // Un ciel couvert aplatit tout : moins de soleil, plus d'ambiante diffuse.
+  const cover = WX.offline ? 0 : WX.clouds;
+  sun.intensity *= 1 - cover * .55;
+  ambient.intensity *= 1 + cover * .35;
+
+  // Le soleil traverse vraiment le ciel : d'est en ouest, haut a midi. Ce sont les
+  // ombres qui balaient la piece qui font sentir l'heure, pas la teinte seule.
+  const p = clamp01((hour - SUN_H.rise) / Math.max(.5, SUN_H.set - SUN_H.rise));
+  const elev = Math.sin(Math.PI * p);
+  sun.position.set(-21 + p * 42, 3.5 + elev * 23, -16);
+
   for (const pane of windowPanes) {
     pane.material.emissive.copy(lerpHex(a.win, b.win));
     pane.material.emissiveIntensity = num(a.wi, b.wi);
+  }
+
+  // Les suspensions suivent, chacune gardant son materiau : on ne touche qu'a
+  // l'intensite, pour que la couleur du projet reste la sienne.
+  const lvl = lampLevel(hour);
+  for (const pod of pods) {
+    pod.lampLight.intensity = 15 * lvl;
+    pod.bulb.material.emissiveIntensity = .15 + 1.45 * lvl;
   }
 }
 
@@ -223,8 +412,11 @@ doorKnob.position.set(-ROOM.w / 2 + .12, 1.15, 7.55); scene.add(doorKnob);
 function window3d(x, z) {
   const g = new THREE.Group(); g.position.set(x, 2.15, z); scene.add(g);
   const frame = box(4.3, 1.9, .1, 0x5c3f2a); g.add(frame);
+  // La vitre porte le ciel en texture, et la teinte du jour la colore par-dessus :
+  // c'est le meme plan qui sert de fenetre et de dehors.
   const pane = new THREE.Mesh(new THREE.PlaneGeometry(3.9, 1.55),
-    new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffb866, emissiveIntensity: .85 }));
+    new THREE.MeshStandardMaterial({ color: 0xffffff, map: skyTex, emissive: 0xffb866,
+      emissiveMap: skyTex, emissiveIntensity: .85 }));
   pane.position.z = .07; g.add(pane);
   const bar = box(.07, 1.55, .04, 0x5c3f2a); bar.position.z = .09; g.add(bar);
   windowPanes.push(pane);
@@ -232,8 +424,10 @@ function window3d(x, z) {
 }
 window3d(2.5, -ROOM.d / 2 + .06);
 window3d(9.5, -ROOM.d / 2 + .06);
-applyDaylight();
-setInterval(applyDaylight, 60000); // l'ambiance suit l'heure sans recharger
+// Premier rendu du ciel, puis tout passe par la boucle : applyDaylight etait appele
+// toutes les 60 s, ce qui faisait avancer la lumiere par marches.
+drawSky(nowHours(0), 0);
+applyDaylight(nowHours(0));
 
 // Enseigne murale. Lettrage dessiné par défaut ; si un logo.png est posé à côté
 // d'index.html, il le remplace (le serveur sert les images du dossier).
@@ -984,6 +1178,7 @@ class Pod {
     bulb.position.set(0, -1.64, 0); this.lamp.add(bulb);
     const lampLight = new THREE.PointLight(0xffc98a, 15, 11, 2);
     lampLight.position.set(0, -1.7, 0); this.lamp.add(lampLight);
+    this.lampLight = lampLight; this.bulb = bulb; // pilotes par le cycle jour/nuit
 
     // Cloisons : bois en bas, verre dépoli en haut. Trois côtés ; l'îlot s'ouvre sur
     // l'allée centrale, par où tout le monde entre et sort.
@@ -1419,7 +1614,9 @@ class Agent {
     c.pad.visible = onCouch;
     const a = this.act;
     if (a === 'type' || a === 'term' || a === 'plan') {
-      const sp = a === 'plan' ? 10 : 28;
+      // Fatigue : la frappe ralentit. Au plus bas elle garde la moitie de sa cadence —
+      // en dessous, on ne lirait plus que l'agent est en train de taper.
+      const sp = (a === 'plan' ? 10 : 28) * (1 - .45 * FATIGUE);
       c.armL.rotation.x = 1.25 + .12 * Math.sin(t * sp + ph);
       c.armR.rotation.x = 1.25 + .12 * Math.sin(t * sp + ph + Math.PI);
       c.head.rotation.x = -.1;
@@ -1447,6 +1644,13 @@ class Agent {
       c.armL.rotation.x = c.armR.rotation.x = .2; c.head.rotation.x = .15;
     }
     if (a !== 'think') c.armR.rotation.z = 0;
+    // Le dos s'affaisse et la tete penche, en plus de la pose de l'outil et jamais a sa
+    // place : l'animation de l'outil est l'information, la fatigue n'est qu'un ton.
+    // Au repos, personne n'est fatigue — on est au cafe, c'est bien le propos.
+    if (FATIGUE > .02 && this.state !== 'leisure' && this.state !== 'coffee') {
+      c.torso.position.y -= .06 * FATIGUE;
+      c.head.rotation.x += .22 * FATIGUE;
+    }
     this.desk?.setScreen(a, t);
   }
   // Position a l'ecran, sans toucher au DOM : la mise en page est faite en une passe
@@ -1899,6 +2103,7 @@ soundEl.onclick = () => {
   soundOn = !soundOn;
   soundEl.setAttribute('aria-pressed', String(soundOn));
   soundEl.textContent = (soundOn ? '🔔' : '🔕') + ' Son';
+  ambienceOn(soundOn);
   if (soundOn) ping();
 };
 
@@ -1912,6 +2117,144 @@ function log(txt) {
   while (logEl.children.length > 5) logEl.firstChild.remove();
 }
 function setStatus(m, txt) { mode = m; statusEl.className = 'pill ' + m; statusEl.textContent = txt; }
+
+
+/* ---------- L'usage du bloc de 5 h ---------- */
+// Le serveur ne renvoie que des compteurs, jamais de contenu. Deux lectures sont
+// possibles et aucune n'est parfaite :
+//   - le TEMPS ecoule dans le bloc : exact, sans reglage, mais ne dit rien du volume ;
+//   - le VOLUME consomme : plus parlant, mais aucun quota n'est lisible en local, donc
+//     le budget est forcement une estimation.
+// Par defaut on montre le temps, qui ne ment pas. `?budget=4000000` bascule la jauge
+// et la fatigue sur le volume, rapporte a ce budget-la.
+const BUDGET = Number(params.get('budget')) || 0;
+const USAGE = { elapsed: 0, tokens: 0, messages: 0, blockStart: 0, blockEnd: 0, known: false };
+let FATIGUE = 0;
+
+// La part du bloc qui pilote la jauge et la fatigue.
+function usageRatio() {
+  if (!USAGE.known) return 0;
+  return BUDGET > 0 ? clamp01(USAGE.tokens / BUDGET) : USAGE.elapsed;
+}
+
+const fmtTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1).replace('.', ',') + ' M'
+  : n >= 1e3 ? Math.round(n / 1e3) + ' k' : String(n);
+
+async function pullUsage() {
+  if (server === null) return;
+  try {
+    const j = await (await fetch(server + '/usage')).json();
+    if (j && typeof j.elapsed === 'number') {
+      Object.assign(USAGE, j, { known: true });
+      FATIGUE = usageRatio();
+      clockDirty = true;
+      renderUsage();
+    }
+  } catch { /* serveur indisponible : la jauge reste a sa derniere valeur */ }
+}
+setTimeout(pullUsage, 900);
+setInterval(pullUsage, 30e3);
+
+function renderUsage() {
+  const el = document.getElementById('usage');
+  if (!USAGE.known) { el.hidden = true; return; }
+  el.hidden = false;
+  const r = usageRatio();
+  el.textContent = '⏳ ' + Math.round(r * 100) + ' %  ·  ' + fmtTok(USAGE.tokens);
+  el.style.color = r > .9 ? '#e0695e' : r > .7 ? '#e0a95c' : '';
+  const fin = new Date(USAGE.blockEnd);
+  el.title = 'bloc de 5 h · ' + USAGE.messages + ' messages'
+    + '\nfin vers ' + fin.toLocaleTimeString('fr-FR').slice(0, 5)
+    + (BUDGET > 0 ? '\njauge sur le volume, budget ' + fmtTok(BUDGET)
+                  : '\njauge sur le temps écoulé (?budget=… pour le volume)');
+}
+
+/* ---------- L'horloge murale ---------- */
+// Plutot qu'une jauge posee par-dessus l'image, l'information devient un objet de la
+// piece : on la lit comme on lit une pendule de bureau.
+const clockCv = document.createElement('canvas');
+clockCv.width = clockCv.height = 256;
+const clockCtx = clockCv.getContext('2d');
+const clockTex = new THREE.CanvasTexture(clockCv);
+clockTex.anisotropy = 4;
+let clockDirty = true;
+
+function drawClock() {
+  const W = 256, R = 128, x = clockCtx;
+  x.clearRect(0, 0, W, W);
+  x.fillStyle = '#23190f'; x.beginPath(); x.arc(R, R, 118, 0, Math.PI * 2); x.fill();
+  // Graduations : une par heure du bloc, cinq en tout.
+  x.strokeStyle = 'rgba(244,233,220,.3)'; x.lineWidth = 3;
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + (i / 5) * Math.PI * 2;
+    x.beginPath();
+    x.moveTo(R + Math.cos(a) * 104, R + Math.sin(a) * 104);
+    x.lineTo(R + Math.cos(a) * 114, R + Math.sin(a) * 114);
+    x.stroke();
+  }
+  const r = usageRatio();
+  // L'arc se remplit et se rechauffe : vert tant qu'il reste de la marge, ambre, rouge.
+  x.strokeStyle = r > .9 ? '#e0695e' : r > .7 ? '#e0a95c' : '#8fcf8a';
+  x.lineWidth = 16; x.lineCap = 'round';
+  if (r > .002) {
+    x.beginPath();
+    x.arc(R, R, 96, -Math.PI / 2, -Math.PI / 2 + r * Math.PI * 2);
+    x.stroke();
+  }
+  x.textAlign = 'center';
+  x.fillStyle = '#f4e9dc'; x.font = '700 62px system-ui,Segoe UI,sans-serif';
+  x.fillText(USAGE.known ? Math.round(r * 100) + '%' : '—', R, R + 10);
+  x.fillStyle = 'rgba(244,233,220,.5)'; x.font = '500 23px ui-monospace,Consolas,monospace';
+  x.fillText(USAGE.known ? fmtTok(USAGE.tokens) : 'bloc 5 h', R, R + 46);
+  x.font = '500 19px system-ui,Segoe UI,sans-serif';
+  x.fillText('BLOC 5 H', R, R - 42);
+  clockTex.needsUpdate = true;
+}
+
+drawClock();
+const clockFace = new THREE.Mesh(new THREE.CircleGeometry(.5, 48),
+  new THREE.MeshBasicMaterial({ map: clockTex, transparent: true }));
+clockFace.position.set(-1.05, 2.35, -ROOM.d / 2 + .05); scene.add(clockFace);
+const clockRim = new THREE.Mesh(new THREE.TorusGeometry(.52, .04, 10, 36),
+  new THREE.MeshStandardMaterial({ color: 0x6d4b33, roughness: .7 }));
+clockRim.position.set(-1.05, 2.35, -ROOM.d / 2 + .05); scene.add(clockRim);
+
+/* ---------- Meteo : on interroge le serveur, jamais le service directement ---------- */
+// Le serveur met deja en cache dix minutes ; inutile de le solliciter plus souvent
+// que la meteo ne change. Hors ligne, la scene continue avec un ciel degage.
+const WX_ICON = { clear: '☀️', cloud: '☁️', rain: '🌧️', snow: '❄️', fog: '🌫️', storm: '⛈️' };
+const fmtH = (h) => String(Math.floor(h)).padStart(2, '0') + ':'
+  + String(Math.round((h % 1) * 60)).padStart(2, '0');
+
+function renderWeather() {
+  const el = document.getElementById('wx');
+  if (WX.offline || !WX.city) { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = (WX_ICON[WX.kind] || '') + ' ' + WX.city
+    + (WX.temp == null ? '' : '  ' + Math.round(WX.temp) + '°');
+  el.title = 'lever ' + fmtH(SUN_H.rise) + ' · coucher ' + fmtH(SUN_H.set)
+    + ' · couverture ' + Math.round(WX.clouds * 100) + ' %';
+}
+
+async function pullWeather() {
+  if (server === null) return; // ouvert en fichier local : pas de serveur a interroger
+  try {
+    const j = await (await fetch(server + '/weather')).json();
+    if (j.offline) { WX.offline = true; WX.city = null; }
+    else {
+      WX.offline = false;
+      WX.code = j.code; WX.kind = wxKind(j.code);
+      WX.clouds = clamp01((j.clouds ?? 0) / 100);
+      WX.temp = j.temp; WX.city = j.city; WX.wind = j.wind ?? 0;
+      const ri = hourOfISO(j.sunrise), se = hourOfISO(j.sunset);
+      if (ri !== null && se !== null && se > ri) SUN_H = { rise: ri, set: se };
+    }
+  } catch { WX.offline = true; }
+  skyDirty = true;
+  renderWeather();
+}
+setTimeout(pullWeather, 400);
+setInterval(pullWeather, 10 * 60e3);
 
 /* ---------- Mode démo (sans serveur) ---------- */
 let demoTimers = [], demoOn = false;
@@ -1984,10 +2327,94 @@ else {
   setTimeout(() => { if (!opened) startDemo(); }, 2500);
 }
 
+
+/* ---------- Grain, vignette ---------- */
+// `?fx=0` coupe tout : grain, vignettage et halo. La scene reste parfaitement lisible
+// sans eux — ce sont des agrements, pas de l'information.
+const FX_ON = params.get('fx') !== '0';
+if (FX_ON) {
+  // Bruit tire une fois dans un petit carre, puis repete : un bruit recalcule a chaque
+  // image grésillerait et couterait cher pour rien.
+  const nz = document.createElement('canvas'); nz.width = nz.height = 128;
+  const nx = nz.getContext('2d');
+  const img = nx.createImageData(128, 128);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = 110 + Math.random() * 90;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255;
+  }
+  nx.putImageData(img, 0, 0);
+  const grainEl = document.getElementById('grain');
+  grainEl.style.backgroundImage = 'url(' + nz.toDataURL('image/png') + ')';
+  // On ne redessine pas le grain : on le decale. Huit positions suffisent a le faire
+  // vivre, et c'est une seule propriete CSS a changer.
+  let gi = 0;
+  setInterval(() => { gi = (gi + 1) % 8; grainEl.style.backgroundPosition = (gi * 17) + 'px ' + (gi * 29) + 'px'; }, 90);
+} else {
+  document.getElementById('grain').style.display = 'none';
+  document.getElementById('vignette').style.display = 'none';
+}
+
+/* ---------- Ambiance sonore ---------- */
+// Aucune piste n'est livree avec le projet : une boucle lofi est une oeuvre, et ce
+// depot est public. Posez votre `ambience.mp3` a cote d'index.html, le serveur le sert.
+// Absent, le bouton de son continue de ne piloter que le bip.
+let ambience = null, ambienceDead = false;
+const volEl = document.getElementById('vol');
+function ambienceOn(on) {
+  if (server === null || ambienceDead) return;
+  if (!ambience) {
+    ambience = new Audio(server + '/ambience.mp3');
+    ambience.loop = true;
+    ambience.volume = Number(volEl.value) / 100;
+    ambience.addEventListener('error', () => { ambienceDead = true; volEl.hidden = true; });
+  }
+  if (on) ambience.play().catch(() => { ambienceDead = true; volEl.hidden = true; });
+  else ambience.pause();
+  volEl.hidden = !on || ambienceDead;
+}
+volEl.addEventListener('input', () => { if (ambience) ambience.volume = Number(volEl.value) / 100; });
+
+/* ---------- Halo sur les sources lumineuses ---------- */
+// Import dynamique et sous try : si le CDN ne repond pas ou si le chemin des modules
+// additionnels change, on rend sans halo plutot que de laisser une page blanche.
+// Le seuil est haut : seules les ampoules et les ecrans allumes debordent.
+if (FX_ON) {
+  try {
+    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }] = await Promise.all([
+      import('three/addons/postprocessing/EffectComposer.js'),
+      import('three/addons/postprocessing/RenderPass.js'),
+      import('three/addons/postprocessing/UnrealBloomPass.js'),
+    ]);
+    composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, cam));
+    composer.addPass(new UnrealBloomPass(
+      new THREE.Vector2(innerWidth, innerHeight), .34, .8, .86));
+    composer.setSize(innerWidth, innerHeight);
+  } catch (e) {
+    console.warn('[claude-office] halo indisponible, rendu simple :', e);
+    composer = null;
+  }
+}
+
 /* ---------- Boucle ---------- */
 const clock = new THREE.Clock();
+let dayLast = -9;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), .05), t = clock.elapsedTime;
+
+  // L'heure avance en continu. On ne recalcule l'eclairage que quatre fois par
+  // seconde — sauf en horloge acceleree, ou il faut suivre image par image.
+  const hour = nowHours(t);
+  if (CLOCK_SPEED > 0 || t - dayLast > .25) { applyDaylight(hour); dayLast = t; }
+
+  // Le dehors n'est redessine que s'il bouge : pluie, neige et nuages a 10 images
+  // par seconde, le reste seulement quand quelque chose a change. Redessiner une
+  // ville entiere a 60 Hz pour un ciel bleu fixe serait du gaspillage pur.
+  const vivant = WX.kind === 'rain' || WX.kind === 'snow' || WX.kind === 'storm'
+    || WX.kind === 'cloud' || CLOCK_SPEED > 0;
+  if (skyDirty || (vivant && t - skyLast > .1) || t - skyLast > 3) {
+    drawSky(hour, t); skyLast = t; skyDirty = false;
+  }
   for (const a of [...agents]) a.update(dt, t);
   for (const p of pods) {
     if (p.beaconColor != null) {            // battement du gyrophare
@@ -1998,6 +2425,8 @@ renderer.setAnimationLoop(() => {
     }
   }
   updateLife(dt, t);
+  // L'horloge ne change qu'a chaque releve : inutile de la redessiner a 60 Hz.
+  if (clockDirty) { drawClock(); clockDirty = false; }
   coffeeLed.material.emissiveIntensity = .5 + .5 * Math.sin(t * 3);
   // La tele ne s'allume que si quelqu'un est sur le canapé : une pièce vide reste
   // éteinte. Le scintillement imite un jeu, pas une image fixe.
@@ -2009,7 +2438,7 @@ renderer.setAnimationLoop(() => {
   });
   controls.target.lerp(camTarget, 1 - Math.exp(-dt * 2.5)); // glisse vers le nouveau cadrage
   controls.update();
-  renderer.render(scene, cam);
+  if (composer) composer.render(); else renderer.render(scene, cam);
   layoutLabels();
   if (selection) renderDetail();
   hintEl.style.display = mode === 'live' && sessions.size === 0 ? 'block' : 'none';

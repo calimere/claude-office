@@ -90,6 +90,79 @@ Le prompt doit se réduire **exactement** à l'une de ces phrases : une demande 
 café (« ajoute un bouton café ») ne l'envoie pas au bar. Claude reçoit quand même le prompt
 et y répondra — la commande ne pilote que la vue.
 
+## Dehors : l'heure et le temps qu'il fait
+
+La lumière suit l'**horloge système**, en continu. Le soleil traverse vraiment le ciel,
+d'est en ouest, haut à midi : ce sont les ombres qui balaient la pièce qui font sentir
+l'heure passer, pas seulement la teinte.
+
+Les **suspensions s'allument toutes seules** autour du lever et du coucher — les vrais,
+ceux de ta ville, pas des heures fixes qui seraient fausses de trois heures entre
+décembre et juin. Elles restent à demi allumées en plein jour si le ciel est couvert,
+comme on le fait chez soi.
+
+| heure | ciel clair | ciel couvert |
+|---|---|---|
+| 2 h | 100 % | 100 % |
+| lever | 50 % | 50 % |
+| midi | éteintes | 45 % |
+| coucher | 50 % | 50 % |
+| 23 h | 100 % | 100 % |
+
+Derrière les fenêtres, une **silhouette de ville** et le **temps qu'il fait vraiment**,
+récupéré pour la ville de ton choix : ciel dégagé, nuages, brouillard, pluie (avec des
+gouttes et des traînées sur la vitre), neige, orage et ses éclairs. La nuit, les fenêtres
+des immeubles s'allument, et quelques-unes clignotent. Un ciel couvert aplatit aussi la
+lumière intérieure : moins de soleil, plus d'ambiante diffuse.
+
+- `CITY=Lyon node server.js` choisit la ville. `?city=Oslo` pour un essai sans relancer.
+- La météo vient d'[Open-Meteo](https://open-meteo.com) : pas de clé, pas de compte.
+  **C'est le seul appel sortant du projet.** Ce qui part : le nom de la ville, puis des
+  coordonnées. Rien d'autre — ni chemin, ni nom de projet, ni contenu de session. Hors
+  ligne, la scène continue avec un ciel dégagé.
+- `?hour=21` fige l'heure. `?clock=120` fait défiler une journée entière en 120 secondes :
+  c'est le moyen de juger l'ambiance sans attendre le coucher du soleil.
+
+## L'usage du bloc de 5 h
+
+Une **horloge murale** affiche où en est le bloc de 5 heures, et les agents **fatiguent** à
+mesure qu'il se remplit : le dos s'affaisse, la tête penche, la frappe ralentit. Au café
+et sur le canapé, personne n'est fatigué — c'est bien le propos.
+
+> La fatigue s'applique **par-dessus** l'animation de l'outil, jamais à sa place, et la
+> frappe garde plus de la moitié de sa cadence même au maximum : on doit toujours voir
+> qu'un agent est en train de taper. L'information passe avant l'effet.
+
+**Ce que le serveur lit.** Les transcripts de Claude Code (`~/.claude/projects/**/*.jsonl`),
+pour n'en extraire que **deux choses par ligne** : l'horodatage et le bloc `usage`. Le
+contenu des messages n'est jamais lu, jamais retenu, jamais servi, et rien de tout cela ne
+quitte la machine. La lecture est incrémentale — un transcript est un journal en ajout
+seul, on ne relit que ce qui s'est écrit depuis le dernier passage.
+
+**Quel pourcentage ?** Deux lectures sont possibles, et aucune n'est parfaite :
+
+- **Le temps écoulé dans le bloc** — c'est le défaut. Exact, sans réglage. Le bloc est
+  *ancré*, pas glissant : il s'ouvre à un message et dure cinq heures, puis le message
+  suivant en ouvre un neuf. Une fenêtre glissante donnerait un indicateur collé à 100 %
+  dès qu'on travaille plus de cinq heures d'affilée.
+- **Le volume consommé** — `?budget=4000000` bascule la jauge et la fatigue sur les tokens
+  (cache-read exclu : c'est du contexte relu, pas du travail). Plus parlant, mais **aucun
+  quota n'est lisible en local** : le budget reste une estimation que tu fixes toi-même.
+  Autant l'assumer que faire croire à une mesure.
+
+## Le grain et le son
+
+- Un **vignettage** et un **grain** très légers, en CSS — deux calques qui ne coûtent rien
+  à la carte graphique. Le grain se décale plutôt qu'il ne se redessine.
+- Un **halo** sur les ampoules et les écrans allumés, avec un seuil haut pour que seules
+  les vraies sources débordent. Chargé en import dynamique et sous `try` : si le CDN ne
+  répond pas, la scène se rend sans halo plutôt que de rester blanche.
+- `?fx=0` coupe les trois. La scène reste parfaitement lisible sans eux.
+- **Ambiance sonore** : pose ton `ambience.mp3` à côté d'`index.html`, le serveur le sert
+  et le bouton `🔕 Son` le lance en boucle, avec un curseur de volume. **Aucune piste n'est
+  livrée avec le projet** — une boucle lofi est une œuvre, et ce dépôt est public. Sans
+  fichier, le bouton ne pilote que le bip.
+
 ## Quand une session t'appelle
 
 C'est ce qui rend le bureau utile en second écran : on doit pouvoir capter qu'une session
@@ -116,6 +189,7 @@ attend sans lire les étiquettes, et même sans regarder l'onglet.
 ## Installation
 
 1. `node server.js` (Node 18+, aucune dépendance) → ouvre http://localhost:4317
+   `CITY=Lyon node server.js` pour la météo de ta ville (défaut : Paris).
 2. Copie le bloc `hooks` de `hooks.json` dans `~/.claude/settings.json` (global) ou
    `.claude/settings.json` (projet). Fusionne avec tes hooks existants si tu en as.
    **Le même fichier vaut pour macOS, Linux et Windows**, et il n'y a aucun chemin à
@@ -178,6 +252,11 @@ Depuis une autre machine : `HOST=0.0.0.0 node server.js` puis `index.html?server
 - L'open space offre **13 places de repos** (4 au bar, 3 sur le canapé, 6 debout). Un
   quatorzième employé désœuvré reste planté là où il se trouve. Comme on n'embauche que
   faute de disponible, il faut 14 métiers simultanément occupés pour y arriver.
+- **Le budget de tokens est une estimation, pas une mesure.** Aucun quota n'est lisible
+  dans les fichiers locaux de Claude Code — `policy-limits.json` ne contient que de la
+  politique d'organisation. C'est pourquoi la jauge affiche le temps par défaut.
+- Le **premier relevé d'usage** parcourt tous les transcripts récents (~200 ms ici) ;
+  les suivants sont incrémentaux et mis en cache 20 s.
 - La mémoire de l'effectif est **par serveur, pas par projet** : un employé embauché depuis
   un dépôt peut être rappelé depuis un autre. C'est voulu — c'est la même maison.
 
