@@ -1353,11 +1353,33 @@ function makeChar(look) {
       const fall = box(.42, .34, .2, look.hair); fall.position.set(0, -.08, .1); fall.name = 'nuque'; head.add(fall);
     }
   }
+  // Visage. Chaque element est pose JUSTE au-dela de la surface du crane (rayon .22) :
+  // un millimetre trop en arriere et il disparait dans la sphere. Les z ci-dessous sont
+  // calcules pour un rayon de .225 a la position (x, y) de l'element.
+  const eyes = [], pupils = [], brows = [];
+  for (const sx of [-1, 1]) {
+    const eye = box(.052, .058, .018, 0xf2ece1, { roughness: .4 });
+    eye.position.set(sx * .075, .025, -.211); head.add(eye); eyes.push(eye);
+    const pup = box(.026, .032, .012, 0x2b2420);
+    pup.position.set(0, 0, -.009); eye.add(pup); pupils.push(pup);
+    const brow = box(.074, .016, .02, shade(look.hair, -.15));
+    brow.position.set(sx * .075, .098, -.188); head.add(brow); brows.push(brow);
+  }
+  // Bouche en trois morceaux : les deux coins montent ou descendent, et c'est tout ce
+  // qu'il faut pour un sourire. Un seul bloc ne pourrait que s'ouvrir.
+  const mouth = new THREE.Group(); mouth.position.set(0, -.085, -.208); head.add(mouth);
+  const corners = [];
+  mouth.add(box(.05, .016, .018, 0x7e4a45));
+  for (const sx of [-1, 1]) {
+    const k = box(.02, .016, .018, 0x7e4a45);
+    k.position.x = sx * .033; mouth.add(k); corners.push(k);
+  }
+
   if (look.glasses) {
-    const bridge = box(.3, .03, .03, 0x2b2b2b); bridge.position.set(0, .02, -.21); bridge.name = 'visage'; head.add(bridge);
+    const bridge = box(.3, .03, .03, 0x2b2b2b); bridge.position.set(0, .02, -.222); bridge.name = 'visage'; head.add(bridge);
     for (const lx of [-.1, .1]) {
-      const lens = box(.13, .11, .02, 0x8fb7cc, { transparent: true, opacity: .55 });
-      lens.position.set(lx, .02, -.22); head.add(lens);
+      const lens = box(.13, .11, .02, 0x8fb7cc, { transparent: true, opacity: .45 });
+      lens.position.set(lx, .02, -.232); head.add(lens);
     }
   }
 
@@ -1373,7 +1395,9 @@ function makeChar(look) {
   const mkLeg = (x) => {
     const p = new THREE.Group(); p.position.set(x, .65, 0);
     const l = box(.18, .55, .2, look.pants); l.position.y = -.28; p.add(l);
-    const shoe = box(.19, .09, .27, 0x2e2622); shoe.position.set(0, -.58, .04); p.add(shoe);
+    // La chaussure deborde vers l'AVANT, donc vers -Z. Posee en +Z, la pointe partait
+    // dans le dos et tout le monde marchait avec les pieds a l'envers.
+    const shoe = box(.19, .09, .27, 0x2e2622); shoe.position.set(0, -.58, -.04); p.add(shoe);
     g.add(p); return p;
   };
   const armL = mkArm(-.36), armR = mkArm(.36);
@@ -1384,8 +1408,27 @@ function makeChar(look) {
   // Manette, tenue a deux mains devant le torse : montree seulement sur le canape.
   const pad = box(.3, .08, .15, 0x2e2622);
   pad.position.set(0, .34, -.3); pad.visible = false; torso.add(pad);
-  return { g, torso, head, armL, armR, mug, pad, legL: mkLeg(-.13), legR: mkLeg(.13) };
+  return { g, torso, head, armL, armR, mug, pad, eyes, pupils, brows, mouth, corners,
+    legL: mkLeg(-.13), legR: mkLeg(.13) };
 }
+
+// Une humeur par activite. `brow` ouvre ou fronce les sourcils, `lift` souleve tout le
+// haut du visage, `smile` releve les coins de la bouche (negatif : il les baisse),
+// `open` l'ouvre, `narrow` plisse les yeux. Rien ici n'est une information : c'est le
+// ton de ce que l'animation du corps dit deja.
+const MOODS = {
+  type:   { brow: -.20, lift: -.010, smile: .00, open: .00, narrow: .14 },
+  term:   { brow: -.20, lift: -.010, smile: .00, open: .00, narrow: .14 },
+  read:   { brow: -.06, lift: .000, smile: .12, open: .00, narrow: .26 },
+  web:    { brow: -.06, lift: .000, smile: .12, open: .00, narrow: .26 },
+  think:  { brow: .24, lift: .012, smile: .05, open: .18, narrow: .00 },
+  plan:   { brow: .06, lift: .004, smile: .28, open: .00, narrow: .10 },
+  wait:   { brow: .38, lift: .018, smile: -.35, open: .45, narrow: .00 },
+  coffee: { brow: .02, lift: .000, smile: .50, open: .00, narrow: .22 },
+  game:   { brow: .16, lift: .008, smile: .62, open: .22, narrow: .00 },
+  idle:   { brow: .00, lift: .000, smile: .30, open: .00, narrow: .10 },
+  walk:   { brow: .00, lift: .000, smile: .16, open: .00, narrow: .06 },
+};
 
 const DOOR = new V3(-14.3, 0, 7);
 const CORRIDOR_X = -13.0; // couloir le long du mur de gauche, jusqu'a la porte
@@ -1563,8 +1606,33 @@ class Agent {
     p?.members.delete(this);
     p?.maybeClose();
   }
+  // Le visage, independamment de ce que fait le corps. Appele a chaque image : c'est
+  // le clignement qui rend un personnage vivant, bien plus que sa pose.
+  face(t) {
+    const c = this.c, m = MOODS[this.act] ?? MOODS.idle;
+    const ph = hash(this.id) % 97;
+    // Clignement court et desynchronise : un cycle propre a chacun, sinon tout l'open
+    // space cligne en choeur et l'effet se retourne contre nous.
+    const cycle = 3.2 + (ph % 41) * .12;
+    const blink = ((t + ph) % cycle) < .12;
+    // Personne n'est fatigue au cafe ou sur le canape : c'est bien le propos.
+    const tired = (this.state === 'leisure' || this.state === 'coffee') ? 0 : FATIGUE;
+    const open = blink ? .08 : Math.max(.2, 1 - m.narrow - tired * .38);
+    for (const e of c.eyes) { e.scale.y = open; e.position.y = .025 + m.lift * .4; }
+    c.brows.forEach((b, i) => {
+      const sx = i === 0 ? -1 : 1;           // l'extremite interne monte ou descend
+      b.rotation.z = sx * m.brow * .55 - sx * tired * .20;
+      b.position.y = .098 + m.lift + (m.brow > 0 ? .014 : -.007) - tired * .013;
+    });
+    const smile = m.smile - tired * .5;
+    for (const k of c.corners) k.position.y = smile * .024;
+    c.mouth.scale.y = 1 + m.open * 1.7;
+    c.mouth.scale.x = 1 - m.open * .22 + Math.max(0, smile) * .14;
+  }
+
   update(dt, t) {
     const c = this.c, g = c.g, ph = hash(this.id) % 10;
+    this.face(t);
     if (this.path.length) {
       const tgt = this.path[0], d = tgt.clone().sub(g.position), dist = d.length(), step = 3.2 * dt;
       if (dist <= step) { g.position.copy(tgt); this.path.shift(); }
@@ -2240,7 +2308,11 @@ function renderWeather() {
 async function pullWeather() {
   if (server === null) return; // ouvert en fichier local : pas de serveur a interroger
   try {
-    const j = await (await fetch(server + '/weather')).json();
+    // `?city=Marseille` doit arriver jusqu'au serveur : sans ce report, la page
+    // demandait toujours la ville par defaut et le parametre ne faisait rien.
+    const ville = params.get('city');
+    const url = server + '/weather' + (ville ? '?city=' + encodeURIComponent(ville) : '');
+    const j = await (await fetch(url)).json();
     if (j.offline) { WX.offline = true; WX.city = null; }
     else {
       WX.offline = false;

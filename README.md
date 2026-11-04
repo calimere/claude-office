@@ -49,6 +49,10 @@ claude (CLI) ──hooks──▶ curl POST /event ──▶ server.js ──SSE
 - Les bureaux ont **deux écrans**, allumés de la même couleur que l'outil en cours.
 - Chaque agent a une **allure propre** — teint, coupe, haut, pantalon, taille, lunettes —
   dérivée de son nom de façon déterministe. Les leads gardent la famille orange.
+- Et un **visage** : yeux, sourcils, bouche. L'expression suit l'activité — concentré en
+  tapant, sourcils hauts et bouche tombante quand il attend ta validation, souriant au
+  café ou devant la console. Chacun **cligne des yeux** à son propre rythme, entre 7 et
+  17 fois par minute : synchronisés, ils feraient l'effet inverse.
 - Le mur du fond porte une enseigne, **CLAUDE OFFICE** par défaut. `?sign=ACME&subsign=LABS`
   la change ; `?subsign=` seul ne garde que la ligne principale. Elle est dessinée en texte
   (et se redimensionne pour tenir) ; posez un `logo.png` à côté d'`index.html` pour la
@@ -115,7 +119,9 @@ gouttes et des traînées sur la vitre), neige, orage et ses éclairs. La nuit, 
 des immeubles s'allument, et quelques-unes clignotent. Un ciel couvert aplatit aussi la
 lumière intérieure : moins de soleil, plus d'ambiante diffuse.
 
-- `CITY=Lyon node server.js` choisit la ville. `?city=Oslo` pour un essai sans relancer.
+- `CITY=Lyon node server.js` fixe la ville par défaut du serveur (sinon Paris).
+  `?city=Marseille` dans l'URL de la page la change à la volée, sans rien relancer —
+  les accents et les espaces passent (`?city=Saint-Étienne`, `?city=New York`).
 - La météo vient d'[Open-Meteo](https://open-meteo.com) : pas de clé, pas de compte.
   **C'est le seul appel sortant du projet.** Ce qui part : le nom de la ville, puis des
   coordonnées. Rien d'autre — ni chemin, ni nom de projet, ni contenu de session. Hors
