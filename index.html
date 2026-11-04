@@ -1,0 +1,1318 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Office</title>
+<style>
+  :root { --bg:#2b221c; --panel:rgba(38,28,22,.88); --fg:#f4e9dc; --muted:#b9a894;
+    --line:rgba(255,222,186,.13); }
+  html,body { margin:0; height:100%; overflow:hidden; background:var(--bg); color:var(--fg);
+    font:13px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  #stage { position:fixed; inset:0; }
+  #labels { position:fixed; inset:0; pointer-events:none; }
+  .label { position:absolute; transform:translate(-50%,-100%); background:var(--panel);
+    border:1px solid var(--line); border-radius:12px; padding:5px 9px; max-width:168px;
+    font-size:11px; box-shadow:0 6px 18px rgba(0,0,0,.4); backdrop-filter:blur(3px); }
+  .label b, .label .t { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .label .t { color:var(--muted); }
+  .label[data-act=wait] { border-color:#e0695e; animation:pulse 1.2s infinite; }
+  .label[data-act=coffee] { border-color:#d9a05b; }
+  @keyframes pulse { 50% { box-shadow:0 0 0 5px rgba(224,105,94,.3); } }
+  #hud { position:fixed; top:12px; left:12px; right:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .pill { background:var(--panel); border:1px solid var(--line); border-radius:999px;
+    padding:6px 13px; font-weight:600; box-shadow:0 4px 14px rgba(0,0,0,.3); }
+  #status::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%;
+    margin-right:6px; background:#888; vertical-align:middle; }
+  #status.live::before { background:#8fcf8a; } #status.demo::before { background:#e0a95c; }
+  #log { position:fixed; left:12px; right:12px; bottom:12px; max-width:520px; background:var(--panel);
+    border:1px solid var(--line); border-radius:14px; padding:9px 12px;
+    font:11px/1.6 ui-monospace,Menlo,Consolas,monospace; color:var(--muted);
+    box-shadow:0 6px 20px rgba(0,0,0,.32); }
+  #log div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #log div:last-child { color:var(--fg); }
+  #hint { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:var(--panel);
+    border:1px solid var(--line); padding:12px 18px; border-radius:14px; display:none; text-align:center; }
+  #hint code { color:#e0a95c; }
+  #sessions { position:fixed; top:52px; right:12px; width:210px; background:var(--panel);
+    border:1px solid var(--line); border-radius:14px; padding:9px 11px; display:none;
+    box-shadow:0 6px 20px rgba(0,0,0,.32); }
+  #sessions h4 { margin:0 0 6px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+  #sessions .s { display:flex; align-items:baseline; gap:6px; padding:3px 0; font-size:11px; }
+  #sessions .dot { width:8px; height:8px; border-radius:50%; flex:none; align-self:center; }
+  #sessions .nm { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #sessions .ct { margin-left:auto; color:var(--muted); flex:none; }
+  #sessions .s { cursor:pointer; border-radius:7px; padding:3px 5px; }
+  #sessions .s:hover { background:rgba(255,222,186,.08); }
+  #sessions .s[data-alert] { box-shadow:inset 0 0 0 1px rgba(224,105,94,.5); }
+  .label .say { display:block; margin-top:4px; padding-top:4px; border-top:1px solid var(--line);
+    color:var(--fg); font-style:italic; white-space:normal; max-height:4.6em; overflow:hidden; }
+  .pill.btn { cursor:pointer; user-select:none; }
+  .pill.btn[aria-pressed=true] { color:#e0a95c; }
+  #detail { position:fixed; top:52px; right:232px; width:268px; background:var(--panel);
+    border:1px solid var(--line); border-radius:14px; padding:11px 13px; display:none;
+    box-shadow:0 10px 28px rgba(0,0,0,.42); }
+  #detail h4 { margin:0 0 2px; font-size:13px; }
+  #detail .sub { color:var(--muted); font-size:10px; word-break:break-all; margin-bottom:8px; }
+  #detail dl { display:grid; grid-template-columns:auto 1fr; gap:3px 10px; margin:0; font-size:11px; }
+  #detail dt { color:var(--muted); } #detail dd { margin:0; text-align:right; }
+  #detail .close { position:absolute; top:7px; right:10px; cursor:pointer; color:var(--muted); }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="stage"></div>
+<div id="labels"></div>
+<div id="hud"><span class="pill">Claude Office</span><span id="status" class="pill">Connexion…</span>
+<span id="sound" class="pill btn" role="button" aria-pressed="false" title="Son des appels">🔕 Son</span>
+<span id="unfocus" class="pill btn" role="button" hidden>⤢ Tout voir</span></div>
+<div id="hint">En attente de Claude Code…<br><small>lance <code>claude</code> dans un terminal</small></div>
+<div id="sessions"><h4>Sessions</h4><div id="sessions-list"></div></div>
+<div id="detail"><span class="close" id="detail-close">✕</span><h4 id="detail-title"></h4>
+<div class="sub" id="detail-sub"></div><dl id="detail-body"></dl></div>
+<div id="log"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const V3 = THREE.Vector3;
+const params = new URLSearchParams(location.search);
+// Durée de la pause café avant que l'agent ne rentre chez lui. 5 min par défaut ;
+// `?coffee=30` pour observer le cycle complet sans attendre.
+let COFFEE_SEC = Number(params.get('coffee')) || 300;
+
+/* ---------- Scène ---------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2b221c);
+scene.fog = new THREE.Fog(0x2b221c, 30, 62); // adoucit les bords de la pièce
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('stage').appendChild(renderer.domElement);
+
+const cam = new THREE.OrthographicCamera();
+cam.position.set(12, 12, 12);
+const controls = new OrbitControls(cam, renderer.domElement);
+controls.target.set(0, 0, 0);
+controls.maxPolarAngle = Math.PI / 2.3;
+controls.minZoom = 0.6; controls.maxZoom = 3.5;
+controls.enableDamping = true;
+
+// Cadrage : la caméra se resserre quand il n'y a qu'un îlot, s'élargit quand
+// plusieurs projets tournent. Mis à jour par framePods() à chaque ouverture/fermeture.
+let camSpan = 8.5;
+const camTarget = new V3();
+
+function resize() {
+  const w = innerWidth, h = innerHeight, a = w / h;
+  const s = Math.max(camSpan, camSpan * 1.4 / a);
+  renderer.setSize(w, h);
+  Object.assign(cam, { left: -s * a, right: s * a, top: s, bottom: -s, near: -100, far: 100 });
+  cam.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+// Lumière d'intérieur : ciel tiède, rebond chaud du parquet, soleil rasant adouci.
+scene.add(new THREE.HemisphereLight(0xffe7cc, 0x4a3426, 0.85));
+const sun = new THREE.DirectionalLight(0xffd9a8, 1.15);
+sun.position.set(8, 20, 12); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.radius = 3; sun.shadow.bias = -0.0008;
+Object.assign(sun.shadow.camera, { left: -22, right: 22, top: 22, bottom: -22, far: 60 });
+scene.add(sun);
+const ambient = new THREE.AmbientLight(0xffd9b8, 0.22); scene.add(ambient); // évite le noir dur
+const hemi = scene.children.find((o) => o.isHemisphereLight) ?? null;
+
+// L'eclairage suit l'heure reelle : frais le matin, dore en fin d'apres-midi, et le
+// soir il ne reste que les suspensions. `?hour=21` pour forcer une ambiance.
+const DAYLIGHT = [
+  { h: 0,  sun: 0x5a6a8a, i: .18, sky: 0x3b4560, amb: .1,  win: 0x2f3c55, wi: .25 },
+  { h: 7,  sun: 0xffd2a8, i: .85, sky: 0xcfe0ff, amb: .2,  win: 0xcfe4ff, wi: .8 },
+  { h: 12, sun: 0xfff2dd, i: 1.35, sky: 0xffeedd, amb: .26, win: 0xfff3d8, wi: 1.0 },
+  { h: 17, sun: 0xffc07a, i: 1.15, sky: 0xffe0bb, amb: .22, win: 0xffb866, wi: .9 },
+  { h: 20, sun: 0xd08a5a, i: .5,  sky: 0x8a6a62, amb: .15, win: 0xff9f55, wi: .6 },
+  { h: 24, sun: 0x5a6a8a, i: .18, sky: 0x3b4560, amb: .1,  win: 0x2f3c55, wi: .25 },
+];
+const windowPanes = [];
+function applyDaylight() {
+  const forced = Number(params.get('hour'));
+  const d = new Date();
+  const hour = Number.isFinite(forced) && params.has('hour')
+    ? forced : d.getHours() + d.getMinutes() / 60;
+  let a = DAYLIGHT[0], b = DAYLIGHT[DAYLIGHT.length - 1];
+  for (let i = 0; i < DAYLIGHT.length - 1; i++) {
+    if (hour >= DAYLIGHT[i].h && hour <= DAYLIGHT[i + 1].h) { a = DAYLIGHT[i]; b = DAYLIGHT[i + 1]; break; }
+  }
+  const k = (hour - a.h) / Math.max(1e-6, b.h - a.h);
+  const lerpHex = (x, y) => new THREE.Color(x).lerp(new THREE.Color(y), k);
+  const num = (x, y) => x + (y - x) * k;
+  sun.color.copy(lerpHex(a.sun, b.sun)); sun.intensity = num(a.i, b.i);
+  if (hemi) hemi.color.copy(lerpHex(a.sky, b.sky));
+  ambient.intensity = num(a.amb, b.amb);
+  for (const pane of windowPanes) {
+    pane.material.emissive.copy(lerpHex(a.win, b.win));
+    pane.material.emissiveIntensity = num(a.wi, b.wi);
+  }
+}
+
+function box(w, h, d, color, extra = {}) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshStandardMaterial({ color, roughness: .8, ...extra }));
+  m.castShadow = true; m.receiveShadow = true; return m;
+}
+
+// Pièce — dimensionnée pour la grille d'îlots (voir POD_* plus bas)
+const ROOM = { w: 30, d: 22 };
+
+// Parquet dessiné sur canvas : des lames un peu dépareillées valent mieux qu'un aplat.
+function parquetTexture() {
+  const W = 1024, H = 1024, c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  const tones = ['#7c5839', '#724f30', '#845f3d', '#6b4a2c', '#7a5435', '#8a6442'];
+  x.fillStyle = '#6b4a2e'; x.fillRect(0, 0, W, H);
+  const rows = 14, plank = H / rows, len = 190;
+  for (let r = 0; r < rows; r++) {
+    const off = (r % 2) ? len / 2 : 0;
+    for (let i = -1; i * len < W + len; i++) {
+      const px = i * len - off;
+      x.fillStyle = tones[Math.abs(r * 31 + i * 17) % tones.length];
+      x.fillRect(px + 3, r * plank + 3, len - 6, plank - 6);
+      x.strokeStyle = 'rgba(60,38,22,.35)'; x.lineWidth = 1;
+      for (let g = 0; g < 3; g++) {
+        const gy = r * plank + 8 + g * (plank - 16) / 2.4;
+        x.beginPath(); x.moveTo(px + 8, gy); x.lineTo(px + len - 8, gy + (g % 2 ? 2 : -2)); x.stroke();
+      }
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(3, 2.2);
+  t.anisotropy = 8; return t;
+}
+
+const floor = box(ROOM.w, .2, ROOM.d, 0x4a3524); floor.position.y = -.1; scene.add(floor);
+const floorTop = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.w, ROOM.d),
+  new THREE.MeshStandardMaterial({ map: parquetTexture(), roughness: .88 }));
+floorTop.rotation.x = -Math.PI / 2; floorTop.position.y = .002;
+floorTop.receiveShadow = true; scene.add(floorTop);
+
+// Murs : plâtre tiède + soubassement bois, nettement plus doux qu'un gris-bleu.
+const PLASTER = 0xa89079, WAINSCOT = 0x6d4b33;
+const back = box(ROOM.w, 3.6, .2, PLASTER); back.position.set(0, 1.8, -ROOM.d / 2 - .1); scene.add(back);
+const left = box(.2, 3.6, ROOM.d, PLASTER); left.position.set(-ROOM.w / 2 - .1, 1.8, 0); scene.add(left);
+const backLow = box(ROOM.w, 1.05, .08, WAINSCOT); backLow.position.set(0, .52, -ROOM.d / 2 + .01); scene.add(backLow);
+const leftLow = box(.08, 1.05, ROOM.d, WAINSCOT); leftLow.position.set(-ROOM.w / 2 + .01, .52, 0); scene.add(leftLow);
+const backRail = box(ROOM.w, .09, .13, 0x5c3f2a); backRail.position.set(0, 1.07, -ROOM.d / 2 + .02); scene.add(backRail);
+const leftRail = box(.13, .09, ROOM.d, 0x5c3f2a); leftRail.position.set(-ROOM.w / 2 + .02, 1.07, 0); scene.add(leftRail);
+
+const door = box(.12, 2.3, 1.5, 0x6b4428); door.position.set(-ROOM.w / 2 + .03, 1.15, 7); scene.add(door);
+const doorKnob = box(.1, .12, .12, 0xc9a227, { metalness: .6, roughness: .4 });
+doorKnob.position.set(-ROOM.w / 2 + .12, 1.15, 7.55); scene.add(doorKnob);
+
+// Fenêtres : lumière de fin d'après-midi plutôt que néon bleu.
+function window3d(x, z) {
+  const g = new THREE.Group(); g.position.set(x, 2.15, z); scene.add(g);
+  const frame = box(4.3, 1.9, .1, 0x5c3f2a); g.add(frame);
+  const pane = new THREE.Mesh(new THREE.PlaneGeometry(3.9, 1.55),
+    new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffb866, emissiveIntensity: .85 }));
+  pane.position.z = .07; g.add(pane);
+  const bar = box(.07, 1.55, .04, 0x5c3f2a); bar.position.z = .09; g.add(bar);
+  windowPanes.push(pane);
+  return g;
+}
+window3d(2.5, -ROOM.d / 2 + .06);
+window3d(9.5, -ROOM.d / 2 + .06);
+applyDaylight();
+setInterval(applyDaylight, 60000); // l'ambiance suit l'heure sans recharger
+
+// Enseigne murale. Lettrage dessiné par défaut ; si un logo.png est posé à côté
+// d'index.html, il le remplace (le serveur sert les images du dossier).
+// Enseigne du mur du fond. Generique par defaut : `?sign=ACME&subsign=LABS` pour
+// l'adapter a sa maison, `?subsign=` seul pour ne garder que la ligne principale.
+// Un `logo.png` pose a cote d'index.html remplace de toute facon le lettrage.
+const SIGN = params.get('sign') ?? 'CLAUDE';
+const SIGN_SUB = params.get('subsign') ?? 'OFFICE';
+
+function wordmarkTexture() {
+  const W = 1024, H = 256, PAD = 48, c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.clearRect(0, 0, W, H);
+  x.textAlign = 'center';
+  // Une enseigne passee en parametre peut etre longue : on reduit le corps jusqu'a
+  // ce qu'elle tienne dans la texture plutot que de la laisser deborder.
+  const fit = (txt, size, weight) => {
+    for (; size > 12; size -= 2) {
+      x.font = `${weight} ${size}px system-ui,Segoe UI,sans-serif`;
+      if (x.measureText(txt).width <= W - PAD * 2) break;
+    }
+  };
+  if (SIGN) {
+    fit(SIGN, 104, 700);
+    x.fillStyle = '#f0e2cf'; x.fillText(SIGN, W / 2, 118);
+  }
+  if (SIGN_SUB) {
+    // Sous-titre espace lettre a lettre ; le pas se resserre si le mot est long.
+    fit(SIGN_SUB, 46, 500);
+    x.fillStyle = '#d2a35c';
+    const step = Math.min(44, (W - PAD * 2) / Math.max(1, SIGN_SUB.length));
+    SIGN_SUB.split('').forEach((ch, i) =>
+      x.fillText(ch, W / 2 + (i - (SIGN_SUB.length - 1) / 2) * step, 188));
+  }
+  const t = new THREE.CanvasTexture(c); t.anisotropy = 8; return t;
+}
+const logoMat = new THREE.MeshBasicMaterial({ map: wordmarkTexture(), transparent: true });
+const logo = new THREE.Mesh(new THREE.PlaneGeometry(6.4, 1.6), logoMat);
+logo.position.set(-5.5, 2.3, -ROOM.d / 2 + .02); scene.add(logo);
+new THREE.TextureLoader().load('logo.png',
+  (tex) => { logoMat.map?.dispose(); logoMat.map = tex; logoMat.needsUpdate = true; },
+  undefined, () => {}); // pas de logo.png : on garde le lettrage dessiné
+
+/* ---------- Coin cafe ---------- */
+// Les sous-agents qui ont fini viennent ici. S'ils ne sont pas rappeles, ils s'en vont.
+// Installe a l'avant droit, dans la bande libre devant les ilots (z > 7,55) : c'est le
+// coin le plus proche de la camera, donc le plus lisible.
+//
+// Disposition en trois bandes paralleles, pour qu'une voie d'acces passe entre elles
+// sans traverser ni le bar ni le mange-debout :
+//   x ~ 10,6  comptoir + machine
+//   x = 12,5  CAFE_LANE_X, la voie d'acces
+//   x ~ 13,3  les places debout, face au bar
+//   x ~ 14,2  le mange-debout
+const CAFE_Z = 8.2;       // au-dela, on est dans le coin cafe (voir fromHere())
+const CAFE_LANE_X = 12.5; // voie d'acces : a droite des cloisons (x = 12,05), a gauche des places
+const COFFEE = new V3(14.2, 0, 9.6);
+
+const counter = box(1.2, 1.0, 2.6, 0x6d4b33); counter.position.set(10.6, .5, 9.6); scene.add(counter);
+const counterTop = box(1.34, .1, 2.74, 0x8a6442); counterTop.position.set(10.6, 1.03, 9.6); scene.add(counterTop);
+const machine = box(.7, .9, 1.0, 0x2e2622); machine.position.set(10.55, 1.53, 9.6); scene.add(machine);
+const machineTop = box(.76, .1, 1.06, 0x4a3a32); machineTop.position.set(10.55, 2.02, 9.6); scene.add(machineTop);
+const spout = box(.22, .26, .1, 0xb9b2a6, { metalness: .5, roughness: .4 });
+spout.position.set(10.95, 1.35, 9.6); scene.add(spout);
+const coffeeLed = box(.1, .1, .02, 0xff6b3b, { emissive: 0xff6b3b });
+coffeeLed.position.set(10.92, 1.75, 9.28); scene.add(coffeeLed);
+for (const dz of [-.45, 0, .45]) { // tasses alignees sur le comptoir
+  const cup = new THREE.Mesh(new THREE.CylinderGeometry(.09, .07, .14, 10),
+    new THREE.MeshStandardMaterial({ color: 0xf2e8da, roughness: .6 }));
+  cup.position.set(10.3, 1.15, 9.6 + dz); cup.castShadow = true; scene.add(cup);
+}
+
+// Mange-debout : barre allongee le long de z, pour tenir dans la bande libre.
+const tableTop = box(.9, .1, 2.6, 0x8a6442, { roughness: .7 });
+tableTop.position.set(COFFEE.x, 1.08, COFFEE.z); scene.add(tableTop);
+for (const dz of [-1.0, 1.0]) {
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(.09, .09, 1.05, 12),
+    new THREE.MeshStandardMaterial({ color: 0x3f3630, metalness: .4, roughness: .5 }));
+  stem.position.set(COFFEE.x, .53, COFFEE.z + dz); scene.add(stem);
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(.34, .38, .07, 16),
+    new THREE.MeshStandardMaterial({ color: 0x3f3630, metalness: .4, roughness: .5 }));
+  foot.position.set(COFFEE.x, .04, COFFEE.z + dz); scene.add(foot);
+}
+
+// Places debout : alignees du cote bar, face au comptoir.
+const COFFEE_SPOTS = [-1.05, -.35, .35, 1.05].map((dz) => ({
+  pos: new V3(13.3, 0, COFFEE.z + dz), busy: false,
+}));
+function claimSpot() { const s = COFFEE_SPOTS.find((k) => !k.busy); if (s) s.busy = true; return s; }
+
+// Tapis : epouse la bande, sans glisser sous les cloisons (paroi droite en x = 12,05).
+const coffeeRug = box(4.8, .03, 3.4, 0x8c5a46, { roughness: 1 });
+coffeeRug.position.set(12.4, .015, 9.6); coffeeRug.castShadow = false;
+coffeeRug.receiveShadow = true; scene.add(coffeeRug);
+
+// Rack : une LED par commande shell encore en cours (background_tasks des hooks).
+const RACK_X = -2.4, RACK_LEDS = 8;
+const rackBody = box(1.1, 2.0, .8, 0x2a2420); rackBody.position.set(RACK_X, 1.0, -10.3); scene.add(rackBody);
+const rackTop = box(1.2, .08, .9, 0x3a322c); rackTop.position.set(RACK_X, 2.04, -10.3); scene.add(rackTop);
+const rackLeds = [];
+for (let i = 0; i < RACK_LEDS; i++) {
+  const led = box(.5, .07, .02, 0x1e1a17, { emissive: 0x000000 });
+  led.position.set(RACK_X, 1.82 - i * .2, -9.89); scene.add(led); rackLeds.push(led);
+}
+function runningTasks() {
+  return [...sessions.values()].reduce((n, s) => n + (s.bg?.length ?? 0), 0);
+}
+function refreshRack() {
+  const n = Math.min(runningTasks(), RACK_LEDS);
+  rackLeds.forEach((led, i) => led.material.emissive.setHex(i < n ? 0x6fcf97 : 0x000000));
+}
+
+function plant(x, z, s = 1) {
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(.34 * s, .26 * s, .55 * s, 12),
+    new THREE.MeshStandardMaterial({ color: 0xb06a44, roughness: .85 }));
+  pot.position.set(x, .27 * s, z); pot.castShadow = true; scene.add(pot);
+  for (const [dx, dy, dz, r] of [[0, .95, 0, .52], [.26, .72, .14, .34], [-.22, .76, -.16, .3]]) {
+    const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(r * s, 0),
+      new THREE.MeshStandardMaterial({ color: 0x5d8f56, flatShading: true, roughness: .9 }));
+    leaf.position.set(x + dx * s, dy * s, z + dz * s); leaf.castShadow = true; scene.add(leaf);
+  }
+}
+// Les deux plantes de l'avant droit ont cede la place au coin cafe ; l'une d'elles
+// reprend le coin du fond a droite, laisse vide.
+plant(13.6, -10.1, 1.25); plant(-13.9, -9.6, 1); plant(-7.4, 10.6, .85);
+
+// Étagère et bouquins : du détail tiède sur le mur du fond
+const shelf = box(3.4, .12, .5, 0x6d4b33); shelf.position.set(-11.5, 1.75, -ROOM.d / 2 + .3); scene.add(shelf);
+const BOOKS = [0xb5553f, 0xd2a35c, 0x5d8f56, 0x8a6fa3, 0xc97b5a, 0x6e8ca8];
+for (let i = 0; i < 11; i++) {
+  const h = .3 + (i % 4) * .06;
+  const b = box(.14, h, .34, BOOKS[i % BOOKS.length]);
+  b.position.set(-12.9 + i * .26, 1.81 + h / 2, -ROOM.d / 2 + .3); scene.add(b);
+}
+
+/* ---------- Bureaux ---------- */
+// Memes teintes qu'avant (vert, ambre, bleu, violet, taupe, rose, rouge) desaturees :
+// un écran allumé doit se lire sans crever l'ambiance tamisée.
+const SCREEN = { type: 0x74c98d, term: 0xe8a84e, read: 0x6fa3d6, web: 0xa88cc9,
+  think: 0x9a8b7c, plan: 0xdb8fa8, wait: 0xe0695e, idle: 0x3a2f27, walk: 0x3a2f27,
+  coffee: 0x3a2f27 };
+
+function makeDesk(parent, x, z) {
+  const g = new THREE.Group(); g.position.set(x, 0, z); parent.add(g);
+  const top = box(2.2, .1, 1.1, 0xb98b5e); top.position.y = .9; g.add(top);
+  for (const [lx, lz] of [[-1, -.45], [1, -.45], [-1, .45], [1, .45]]) {
+    const l = box(.08, .85, .08, 0x6b4e35); l.position.set(lx, .43, lz); g.add(l);
+  }
+  // Deux ecrans legerement orientes vers le siege : ce sont des developpeurs. Ils
+  // partagent le meme materiau, donc ils s'allument et clignotent ensemble.
+  const screenMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0x0b0e14 });
+  for (const [mx, ry] of [[-.54, .2], [.54, -.2]]) {
+    const foot = box(.3, .03, .18, 0x222222); foot.position.set(mx, .96, -.3); g.add(foot);
+    const stand = box(.09, .3, .09, 0x222222); stand.position.set(mx, 1.1, -.3); g.add(stand);
+    const mon = box(.98, .62, .05, 0x15171c);
+    mon.position.set(mx, 1.42, -.3); mon.rotation.y = ry; g.add(mon);
+    const scr = new THREE.Mesh(new THREE.PlaneGeometry(.88, .52), screenMat);
+    scr.position.set(mx + Math.sin(ry) * .031, 1.42, -.3 + Math.cos(ry) * .031);
+    scr.rotation.y = ry; g.add(scr);
+  }
+  const kb = box(.7, .03, .22, 0x3a3d45); kb.position.set(0, .965, .3); g.add(kb);
+  const seat = box(.62, .08, .6, 0x7a5a4c); seat.position.set(0, .56, .95); g.add(seat);
+  const backr = box(.62, .65, .08, 0x7a5a4c); backr.position.set(0, .95, 1.27); g.add(backr);
+  const post = box(.06, .5, .06, 0x4a403a); post.position.set(0, .28, .95); g.add(post);
+  const mug = new THREE.Mesh(new THREE.CylinderGeometry(.07, .06, .12, 10),
+    new THREE.MeshStandardMaterial({ color: 0xe9ddcb, roughness: .6 }));
+  mug.position.set(.78, 1.01, .18); mug.castShadow = true; g.add(mug); // tasse oubliée sur le bureau
+  return {
+    busy: false, seat: new V3(x, 0, z + .8),
+    setScreen(act, t) {
+      if (!act) { screenMat.emissive.setHex(0x0b0e14); screenMat.emissiveIntensity = 1; return; }
+      screenMat.emissive.setHex(SCREEN[act] ?? 0x2a3a55);
+      screenMat.emissiveIntensity =
+        act === 'type' || act === 'term' ? .55 + .25 * Math.sin(t * 22)
+        : act === 'wait' ? .4 + .6 * Math.abs(Math.sin(t * 5)) : .75;
+    },
+  };
+}
+/* ---------- Îlots : un par session, nommé d'après le projet ---------- */
+// Grille d'emplacements — 3 colonnes × 2 rangées = 6 sessions simultanées visibles.
+const POD_X = [-6, 1.5, 9], POD_Z = [-4.5, 4.5];
+// Bureaux d'un ilot. L'ordre d'attribution est recalcule par ilot (cote ouvert
+// d'abord), si bien que le lead s'assoit toujours face a l'allee.
+const POD_SEATS = [[-1.6, 1.6], [-1.6, -1.6], [1.6, -1.6], [1.6, 1.6]];
+// Couleur d'identite d'un projet : tapis, abat-jour, liseres, cadre du panneau et
+// pastille du panneau Sessions. Terre cuite, sauge, bleu poussiereux, moutarde,
+// prune, canard.
+const TINTS = [0xc9795b, 0x7f9d6f, 0x6e8ca8, 0xd2a35c, 0xa97fa0, 0x5fa39b];
+
+const podSlots = [];
+for (const z of POD_Z) for (const x of POD_X) podSlots.push({ x, z, count: 0 });
+
+// Panneau de l'îlot : texture canvas, pour afficher le nom du projet en 3D.
+function signTexture(title, sub, tint) {
+  const W = 512, H = 160, c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.fillStyle = 'rgba(40,29,22,.93)';
+  x.strokeStyle = '#' + tint.toString(16).padStart(6, '0'); x.lineWidth = 6;
+  if (x.roundRect) { x.beginPath(); x.roundRect(4, 4, W - 8, H - 8, 26); x.fill(); x.stroke(); }
+  else { x.fillRect(4, 4, W - 8, H - 8); x.strokeRect(4, 4, W - 8, H - 8); } // navigateurs < 2023
+  x.textAlign = 'center';
+  x.fillStyle = '#f4e9dc'; x.font = '600 60px system-ui,Segoe UI,sans-serif';
+  x.fillText(title, W / 2, 78, W - 56);
+  x.fillStyle = '#b9a894'; x.font = '400 34px ui-monospace,Consolas,monospace';
+  x.fillText(sub, W / 2, 126, W - 56);
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 4; return t;
+}
+
+const pods = new Set();
+
+class Pod {
+  constructor(title, sub, tint) {
+    this.tint = tint; this.members = new Set(); this.closing = false; this.closed = false;
+    // Au-delà de podSlots.length sessions simultanées, on empile sur l'emplacement
+    // le moins chargé ; le comptage garde la libération correcte.
+    this.slot = podSlots.find((s) => !s.count)
+      ?? podSlots.reduce((a, b) => (b.count < a.count ? b : a));
+    this.slot.count++;
+    const { x, z } = this.slot;
+    this.g = new THREE.Group(); scene.add(this.g);
+
+    // Tapis : liseré à la couleur du projet, laine teintée au centre
+    const edge = box(6.1, .04, 6.3, tint, { roughness: 1 });
+    edge.position.set(x, .02, z); edge.castShadow = false; this.g.add(edge);
+    const inner = new THREE.Color(0x5a4336).lerp(new THREE.Color(tint), .45);
+    const rug = box(5.8, .05, 6.0, inner, { roughness: 1 });
+    rug.position.set(x, .045, z); rug.castShadow = false;
+    rug.userData.pod = this; this.g.add(rug);
+
+    // Suspension au-dessus de l'îlot : c'est elle qui donne le halo chaud.
+    const cord = box(.035, 1.1, .035, 0x3a302a); cord.position.set(x, 3.95, z); this.g.add(cord);
+    const lampShade = new THREE.Mesh(new THREE.ConeGeometry(.78, .62, 20, 1, true),
+      new THREE.MeshStandardMaterial({ color: tint, roughness: .75, side: THREE.DoubleSide }));
+    lampShade.position.set(x, 3.1, z); this.g.add(lampShade);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(.15, 12, 10),
+      new THREE.MeshStandardMaterial({ color: 0xfff1d4, emissive: 0xffc980, emissiveIntensity: 1.5 }));
+    bulb.position.set(x, 2.86, z); this.g.add(bulb);
+    const lamp = new THREE.PointLight(0xffc98a, 15, 11, 2);
+    lamp.position.set(x, 2.8, z); this.g.add(lamp);
+
+    // Panneau suspendu (billboard : réorienté vers la caméra à chaque frame)
+    this.sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.2, 1.0),
+      new THREE.MeshBasicMaterial({ map: signTexture(title, sub, tint), transparent: true }),
+    );
+    this.sign.position.set(x, 4.6, z); this.g.add(this.sign);
+
+    // Cloisons : bois en bas, verre dépoli en haut. Trois côtés ; l'îlot s'ouvre sur
+    // l'allée centrale, par où tout le monde entre et sort.
+    const open = z < 0 ? 1 : -1; // sens de l'ouverture (vers z = 0)
+    const panel = (px, pz, w, d) => {
+      const base = box(w, .78, d, 0x6d4b33); base.position.set(px, .39, pz); this.g.add(base);
+      const glass = new THREE.Mesh(new THREE.BoxGeometry(w, .72, d),
+        new THREE.MeshStandardMaterial({
+          color: 0xd6e4e6, transparent: true, opacity: .2, roughness: .15,
+        }));
+      glass.position.set(px, 1.16, pz); this.g.add(glass);
+      const rail = box(w + .06, .07, d + .06, shade(tint, -.3));
+      rail.position.set(px, 1.55, pz); this.g.add(rail);
+    };
+    panel(x - 3.05, z, .1, 6.2);          // côté gauche
+    panel(x + 3.05, z, .1, 6.2);          // côté droit
+    panel(x, z - 3.05 * open, 6.2, .1);   // fond, à l'opposé de l'allée
+
+    // Gyrophare : eteint la plupart du temps, il s'allume quand la session appelle.
+    this.beacon = new THREE.Mesh(new THREE.SphereGeometry(.26, 14, 12),
+      new THREE.MeshStandardMaterial({ color: 0x3a2f27, emissive: 0x000000 }));
+    this.beacon.position.set(x, 5.25, z); this.beacon.visible = false; this.g.add(this.beacon);
+    this.beaconLight = new THREE.PointLight(0xffffff, 0, 9, 2);
+    this.beaconLight.position.set(x, 5.1, z); this.g.add(this.beaconLight);
+
+    // Point d'entrée dans l'allée, devant l'ouverture
+    this.gate = new V3(x, 0, z + 3.5 * open);
+
+    // Côté ouvert en premier : le lead, servi d'abord, s'assoit face à l'allée dans
+    // les deux rangées — sinon il tourne le dos au spectateur dans l'une des deux.
+    const seats = [...POD_SEATS].sort((a, b) => (b[1] - a[1]) * open);
+    this.desks = seats.map(([dx, dz]) => makeDesk(this.g, x + dx, z + dz));
+    pods.add(this); framePods();
+  }
+  // Au-delà de 4 agents l'îlot est plein : on double sur le dernier bureau plutôt
+  // que de déborder sur un autre projet. D'où le comptage d'occupants.
+  claimDesk() {
+    const d = this.desks.find((k) => !k.busy) ?? this.desks[this.desks.length - 1];
+    d.busy = true; d.occupants = (d.occupants || 0) + 1; return d;
+  }
+  setBeacon(color) {
+    this.beaconColor = color ?? null;
+    this.beacon.visible = color != null;
+    if (color != null) {
+      this.beacon.material.emissive.setHex(color);
+      this.beaconLight.color.setHex(color);
+    } else this.beaconLight.intensity = 0;
+  }
+  releaseDesk(d) {
+    if ((d.occupants = (d.occupants || 1) - 1) <= 0) { d.busy = false; d.setScreen(null); }
+  }
+  // Session terminée : on attend que les sous-agents aient franchi la porte, puis
+  // le lead s'efface sur place (il ne sort jamais) et l'îlot est démonté.
+  maybeClose() {
+    if (!this.closing || this.closed) return;
+    if ([...this.members].some((a) => a.kind !== 'main')) return;
+    this.closed = true;
+    for (const a of [...this.members]) a.dispose();
+    this.dispose();
+  }
+  dispose() {
+    scene.remove(this.g);
+    this.g.traverse((o) => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); });
+    this.slot.count--; pods.delete(this); framePods();
+  }
+}
+
+// Recentre et redimensionne la vue sur les îlots actifs.
+function framePods() {
+  if (focused) return; // un ilot est epingle : on ne recadre pas dans son dos
+  let cx = 0, cz = 0;
+  for (const p of pods) { cx += p.slot.x; cz += p.slot.z; }
+  const n = pods.size;
+  camTarget.set(n ? cx / n : 0, 0, n ? cz / n : 0);
+  camSpan = n <= 1 ? 8.5 : n <= 2 ? 13 : n <= 4 ? 17 : 21;
+  resize();
+}
+
+/* ---------- Personnages ---------- */
+// Garde-robe. Sans variété de coupe, de teint et de pantalon, douze cubes de la même
+// silhouette donnent une impression d'uniforme — d'où les styles ci-dessous.
+const SKINS = [0xf3d2b3, 0xe8bd96, 0xd1a070, 0xb07a4c, 0x8a5a36, 0x5f3d26];
+const HAIRS = [0x2a1d16, 0x15110e, 0x7a4a24, 0xd9b26f, 0x8a3b24, 0x9b9389, 0x4a3b55];
+const CUTS = ['court', 'chignon', 'long', 'chauve', 'bonnet', 'casquette'];
+const SHIRTS = [0x5c7f9e, 0x74925f, 0x9a7194, 0xc99a55, 0xb86b50, 0x4f948c,
+  0x7c6ba0, 0xa8584f, 0x3f7a86, 0xb3985c];
+const LEAD_SHIRTS = [0xe8743b, 0xd9632e, 0xef8b4c, 0xc2561f];
+const PANTS = [0x3b4254, 0x4a3f36, 0x334039, 0x5a4a52, 0x2f3a4a, 0x6b5744, 0x7a6a58];
+const TOPS = ['simple', 'capuche', 'veste', 'simple', 'col'];
+
+const hash = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7) >>> 0;
+const shade = (hex, k) =>
+  new THREE.Color(hex).lerp(new THREE.Color(k < 0 ? 0x000000 : 0xffffff), Math.abs(k)).getHex();
+
+// Un décalage de bits ne suffit pas : les noms d'agents partagent leurs préfixes,
+// les bits de poids fort bougent à peine et tout le monde finit habillé pareil.
+// Chaque champ tire donc dans un flux mélangé indépendamment.
+function mix(h, k) {
+  let x = (h ^ Math.imul(k + 1, 0x9e3779b1)) >>> 0;
+  x = Math.imul(x ^ (x >>> 16), 0x85ebca6b) >>> 0;
+  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0;
+  return (x ^ (x >>> 16)) >>> 0;
+}
+
+// La graine mêle le nom ET l'identifiant d'instance : deux Explore simultanés ne sont
+// pas jumeaux. L'allure est donc stable pour la vie d'un agent — rappel au café
+// compris — mais pas d'une session à l'autre.
+function lookFor(h, isLead) {
+  const p = (arr, k) => arr[mix(h, k) % arr.length];
+  return {
+    skin: p(SKINS, 1), hair: p(HAIRS, 2), cut: p(CUTS, 3),
+    shirt: isLead ? LEAD_SHIRTS[mix(h, 4) % LEAD_SHIRTS.length] : p(SHIRTS, 4),
+    pants: p(PANTS, 5), top: p(TOPS, 6),
+    shortSleeves: mix(h, 7) % 2 === 0,
+    glasses: mix(h, 8) % 4 === 0,
+    height: .92 + (mix(h, 9) % 7) * .027,
+    build: .92 + (mix(h, 10) % 5) * .045,
+  };
+}
+
+// L'avant du modele est -Z : c'est vers -Z que les bras tapent (voir la pose
+// 'type'), et le clavier s'y trouve. Tout trait de visage va donc en z negatif,
+// la nuque en z positif. Se tromper de cote fait marcher les gens a reculons.
+function makeChar(look) {
+  const skinMat = new THREE.MeshStandardMaterial({ color: look.skin, roughness: .75 });
+  const hairMat = new THREE.MeshStandardMaterial({ color: look.hair, roughness: .9 });
+  const g = new THREE.Group(); g.scale.setScalar(look.height);
+  const torso = new THREE.Group(); torso.position.y = .65; g.add(torso);
+
+  const body = box(.55 * look.build, .6, .35, look.shirt); body.position.y = .3; torso.add(body);
+  if (look.top === 'capuche') {
+    const hood = box(.48 * look.build, .24, .28, shade(look.shirt, -.2));
+    hood.position.set(0, .6, .11); torso.add(hood);
+  } else if (look.top === 'veste') {
+    const lapel = box(.58 * look.build, .5, .38, shade(look.shirt, -.28));
+    lapel.position.y = .3; lapel.scale.z = .99; torso.add(lapel);
+    const shirtFront = box(.2, .5, .4, 0xf0e6d8); shirtFront.position.y = .3; torso.add(shirtFront);
+  } else if (look.top === 'col') {
+    const collar = box(.58 * look.build, .1, .38, shade(look.shirt, .3));
+    collar.position.y = .56; torso.add(collar);
+  }
+
+  const head = new THREE.Group(); head.position.y = .82; torso.add(head);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(.22, 20, 16), skinMat);
+  skull.castShadow = true; head.add(skull);
+
+  if (look.cut !== 'chauve') {
+    const cap = new THREE.Mesh(
+      new THREE.SphereGeometry(.235, 20, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+      look.cut === 'bonnet' ? new THREE.MeshStandardMaterial({ color: shade(look.shirt, -.1), roughness: .95 })
+      : look.cut === 'casquette' ? new THREE.MeshStandardMaterial({ color: shade(look.shirt, -.35), roughness: .9 })
+      : hairMat);
+    cap.position.set(0, .02, .03); cap.rotation.x = .25; head.add(cap);
+    if (look.cut === 'casquette') {
+      const visor = box(.3, .04, .22, shade(look.shirt, -.4)); visor.position.set(0, .07, -.24); head.add(visor);
+    }
+    if (look.cut === 'chignon') {
+      const bun = new THREE.Mesh(new THREE.SphereGeometry(.12, 12, 10), hairMat);
+      bun.position.set(0, .14, .21); head.add(bun);
+    }
+    if (look.cut === 'long') {
+      const fall = box(.42, .34, .2, look.hair); fall.position.set(0, -.08, .1); fall.name = 'nuque'; head.add(fall);
+    }
+  }
+  if (look.glasses) {
+    const bridge = box(.3, .03, .03, 0x2b2b2b); bridge.position.set(0, .02, -.21); bridge.name = 'visage'; head.add(bridge);
+    for (const lx of [-.1, .1]) {
+      const lens = box(.13, .11, .02, 0x8fb7cc, { transparent: true, opacity: .55 });
+      lens.position.set(lx, .02, -.22); head.add(lens);
+    }
+  }
+
+  const mkArm = (x) => {
+    const p = new THREE.Group(); p.position.set(x * look.build, .55, 0);
+    const upper = box(.14, .26, .14, look.shirt); upper.position.y = -.13; p.add(upper);
+    const lower = box(.13, .24, .13, look.shortSleeves ? look.skin : look.shirt);
+    lower.position.y = -.37; p.add(lower);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(.08, 10, 8), skinMat);
+    hand.position.y = -.5; p.add(hand);
+    torso.add(p); return p;
+  };
+  const mkLeg = (x) => {
+    const p = new THREE.Group(); p.position.set(x, .65, 0);
+    const l = box(.18, .55, .2, look.pants); l.position.y = -.28; p.add(l);
+    const shoe = box(.19, .09, .27, 0x2e2622); shoe.position.set(0, -.58, .04); p.add(shoe);
+    g.add(p); return p;
+  };
+  const armL = mkArm(-.36), armR = mkArm(.36);
+  // Tasse dans la main droite, montrée seulement pendant la pause café.
+  const mug = new THREE.Mesh(new THREE.CylinderGeometry(.075, .062, .13, 10),
+    new THREE.MeshStandardMaterial({ color: 0xf2e8da, roughness: .6 }));
+  mug.position.set(0, -.62, -.07); mug.visible = false; mug.castShadow = true; armR.add(mug);
+  return { g, torso, head, armL, armR, mug, legL: mkLeg(-.13), legR: mkLeg(.13) };
+}
+
+const DOOR = new V3(-14.3, 0, 7);
+const CORRIDOR_X = -13.0; // couloir le long du mur de gauche, jusqu'a la porte
+const AISLE_Z = 0;        // allee centrale : seule voie traversant la piece sans cloison
+const labelsEl = document.getElementById('labels');
+const agents = new Set();
+const tmp = new V3();
+
+class Agent {
+  constructor(id, { name, kind, task, pod, seated, variant = 0 }) {
+    this.id = id; this.name = name; this.kind = kind; this.task = task; this.pod = pod;
+    this.desk = pod.claimDesk();
+    // Graine sur le NOM, pas sur l'instance : un agent que tu nommes (« architecte »)
+    // garde la même silhouette de session en session, on finit par le reconnaître.
+    // La variante ne sert qu'à distinguer deux homonymes présents en même temps.
+    this.c = makeChar(lookFor(mix(hash(name), variant), kind === 'main'));
+    scene.add(this.c.g);
+    // Le lead tient le poste tant que la session vit : il est déjà assis, et ne
+    // franchira jamais la porte. Seuls les sous-agents entrent et sortent.
+    // Le lead tient le poste : déjà assis, il ne franchira jamais la porte. Un agent
+    // reconstitué au rechargement (seated) est lui aussi posé directement — il était
+    // déjà là avant qu'on ouvre la page, le faire entrer serait un mensonge.
+    if (kind === 'main' || seated) {
+      this.c.g.position.copy(this.desk.seat); this.state = 'work'; this.path = [];
+    } else {
+      this.c.g.position.copy(DOOR); this.state = 'walkin'; this.path = this.toDesk();
+    }
+    this.el = document.createElement('div'); this.el.className = 'label';
+    this.c.g.userData.agent = this; // cible de selection au clic
+    this.el.style.borderLeft = '3px solid #' + pod.tint.toString(16).padStart(6, '0');
+    const b = document.createElement('b'); b.textContent = (kind === 'main' ? '🧠 ' : '🤖 ') + name;
+    this.t = document.createElement('span'); this.t.className = 't';
+    this.sayEl = document.createElement('span'); this.sayEl.className = 'say'; this.sayEl.hidden = true;
+    this.el.append(b, this.t, this.sayEl); labelsEl.appendChild(this.el);
+    this.set(kind === 'main' ? 'idle' : 'walk', kind === 'main' ? '☕ prêt' : '🚶 arrive…');
+    agents.add(this); pod.members.add(this);
+  }
+  // Depuis les cloisons, un îlot ne s'aborde que par son ouverture sur l'allée
+  // centrale : couloir de gauche → allée → portillon → bureau. Jamais en diagonale,
+  // sinon les agents traversent le verre.
+  // Ces trajets sont calculés depuis la position réelle, pas depuis le bureau : un
+  // agent congédié en pleine arrivée ne doit pas repartir en diagonale à travers le verre.
+  insidePod() {
+    const p = this.c.g.position, s = this.pod.slot;
+    return Math.abs(p.x - s.x) < 3.05 && Math.abs(p.z - s.z) < 3.05;
+  }
+  // Rejoindre l'allée centrale depuis là où l'on se trouve. Trois cas seulement :
+  // dans un îlot (on sort par le portillon), dans la baie café (on redescend le long
+  // du bord droit), ou dans le couloir de gauche.
+  fromHere() {
+    const p = this.c.g.position;
+    if (this.insidePod()) return [new V3(p.x, 0, this.pod.gate.z), new V3(p.x, 0, AISLE_Z)];
+    if (p.z >= CAFE_Z) return [new V3(CAFE_LANE_X, 0, p.z), new V3(CAFE_LANE_X, 0, AISLE_Z)];
+    return [new V3(CORRIDOR_X, 0, p.z), new V3(CORRIDOR_X, 0, AISLE_Z)];
+  }
+  toDesk() {
+    const s = this.desk.seat;
+    return [...this.fromHere(), new V3(s.x, 0, AISLE_Z),
+      new V3(s.x, 0, this.pod.gate.z), s.clone()];
+  }
+  toExit() {
+    return [...this.fromHere(), new V3(CORRIDOR_X, 0, AISLE_Z),
+      new V3(CORRIDOR_X, 0, DOOR.z), DOOR.clone()];
+  }
+  // On descend la voie d'acces jusqu'au niveau de la place, puis on s'y range : le
+  // dernier pas est court et ne traverse ni le bar ni le mange-debout.
+  toSpot(spot) {
+    return [...this.fromHere(), new V3(CAFE_LANE_X, 0, AISLE_Z),
+      new V3(CAFE_LANE_X, 0, spot.pos.z), spot.pos.clone()];
+  }
+  set(act, text) { this.act = act; this.t.textContent = text; this.el.dataset.act = act; }
+  // Dernier mot de l'agent (last_assistant_message), affiché quelques secondes.
+  say(msg) {
+    const txt = trunc(String(msg ?? '').replace(/[#*`>_]/g, ''), 150);
+    if (!txt) return;
+    this.sayEl.textContent = '« ' + txt + ' »';
+    this.sayEl.hidden = false;
+    clearTimeout(this.sayTimer);
+    this.sayTimer = setTimeout(() => { this.sayEl.hidden = true; }, 12000);
+  }
+
+  // Mission finie : on va au mange-debout plutôt que de disparaître aussitôt.
+  toCoffee() {
+    if (this.state === 'walkout' || this.kind === 'main') return;
+    const spot = claimSpot();
+    if (!spot) { this.leave(); return; } // bar plein : l'agent rentre directement
+    // Calcule le trajet avant de libérer le bureau : fromHere() s'appuie sur la
+    // position réelle, pour qu'un agent encore en chemin ne coupe pas par une cloison.
+    const path = this.toSpot(spot);
+    this.freeDesk();
+    this.spot = spot;
+    this.state = 'tocoffee';
+    this.path = path;
+    this.set('walk', '🚶 va au café');
+  }
+  // Rappelé pendant sa pause : il repose sa tasse et retourne à un bureau de l'îlot.
+  recall(task) {
+    this.freeSpot();
+    this.task = task;
+    this.desk = this.pod.claimDesk();
+    this.state = 'walkin';
+    this.path = this.toDesk();
+    this.set('walk', '🚶 revient du café');
+  }
+  freeSpot() { if (this.spot) { this.spot.busy = false; this.spot = null; } }
+  freeDesk() {
+    if (!this.desk) return;
+    if ((this.desk.occupants || 1) <= 1) this.desk.setScreen(null);
+    this.pod.releaseDesk(this.desk); this.desk = null;
+  }
+  leave() {
+    if (this.state === 'walkout' || this.kind === 'main') return;
+    this.freeSpot();
+    this.state = 'walkout';
+    this.path = this.toExit();
+    this.freeDesk();
+    this.set('walk', '🚶 s\'en va');
+  }
+  dispose() {
+    scene.remove(this.c.g); this.el.remove(); agents.delete(this);
+    this.freeSpot(); this.freeDesk();
+    const r = this.session?.resting, i = r ? r.indexOf(this) : -1;
+    if (i >= 0) r.splice(i, 1);
+    this.pod.members.delete(this);
+    this.pod.maybeClose();
+  }
+  update(dt, t) {
+    const c = this.c, g = c.g, ph = hash(this.id) % 10;
+    if (this.path.length) {
+      const tgt = this.path[0], d = tgt.clone().sub(g.position), dist = d.length(), step = 3.2 * dt;
+      if (dist <= step) { g.position.copy(tgt); this.path.shift(); }
+      else { g.position.addScaledVector(d, step / dist); g.rotation.y = Math.atan2(-d.x, -d.z); }
+      const sw = Math.sin(t * 12) * .6;
+      c.legL.rotation.x = sw; c.legR.rotation.x = -sw;
+      c.armL.rotation.x = -sw * .8; c.armR.rotation.x = sw * .8;
+      c.torso.position.y = .65 + Math.abs(Math.sin(t * 12)) * .04;
+      c.head.rotation.set(0, 0, 0);
+      c.mug.visible = false; // la tasse reste au mange-debout : on ne marche pas avec
+      if (!this.path.length) {
+        if (this.state === 'walkin') {
+          this.state = 'work';
+          if (this.act === 'walk') this.set('think', this.task ? '💭 ' + trunc(this.task, 34) : '💭 prêt');
+        } else if (this.state === 'tocoffee') {
+          this.state = 'coffee';
+          this.coffeeUntil = t + COFFEE_SEC;
+          this.faceAngle = Math.atan2(-(COFFEE.x - g.position.x), -(COFFEE.z - g.position.z));
+          this.set('coffee', '☕ pause café');
+        } else if (this.state === 'walkout') { this.dispose(); return; }
+      }
+      return;
+    }
+    // Immobile : assis au poste, ou debout au mange-debout
+    const standing = this.state === 'coffee';
+    if (standing && t >= this.coffeeUntil) { this.leave(); return; } // personne ne l'a rappelé
+    g.rotation.y = standing ? this.faceAngle : 0;
+    c.legL.rotation.x = c.legR.rotation.x = standing ? 0 : Math.PI / 2;
+    c.torso.position.y = .65; c.head.rotation.set(0, 0, 0);
+    c.mug.visible = standing;
+    const a = this.act;
+    if (a === 'type' || a === 'term' || a === 'plan') {
+      const sp = a === 'plan' ? 10 : 28;
+      c.armL.rotation.x = 1.25 + .12 * Math.sin(t * sp + ph);
+      c.armR.rotation.x = 1.25 + .12 * Math.sin(t * sp + ph + Math.PI);
+      c.head.rotation.x = -.1;
+    } else if (a === 'read' || a === 'web') {
+      c.armL.rotation.x = .9; c.armR.rotation.x = 1.05 + .08 * Math.sin(t * 5 + ph);
+      c.head.rotation.x = -.25; c.head.rotation.y = .15 * Math.sin(t * 1.3 + ph);
+    } else if (a === 'think') {
+      c.armL.rotation.x = .3; c.armR.rotation.x = 2.2; c.armR.rotation.z = -.2;
+      c.head.rotation.z = .15 * Math.sin(t * 1.5 + ph);
+      c.torso.position.y = .65 + .02 * Math.sin(t * 2 + ph);
+    } else if (a === 'wait') {
+      c.armL.rotation.x = .3; c.armR.rotation.x = 2.9 + .2 * Math.sin(t * 8);
+      c.torso.position.y = .65 + Math.abs(Math.sin(t * 6)) * .06;
+    } else if (a === 'coffee') { // debout, tasse en main, regard qui flâne
+      c.armL.rotation.x = .22;
+      c.armR.rotation.x = 1.45 + .07 * Math.sin(t * 1.5 + ph);
+      c.head.rotation.y = .28 * Math.sin(t * .7 + ph);
+      c.torso.position.y = .65 + .018 * Math.sin(t * 1.3 + ph);
+    } else { // idle
+      c.armL.rotation.x = c.armR.rotation.x = .2; c.head.rotation.x = .15;
+    }
+    if (a !== 'think') c.armR.rotation.z = 0;
+    this.desk?.setScreen(a, t);
+  }
+  updateLabel() {
+    tmp.copy(this.c.g.position); tmp.y += 2.3; tmp.project(cam);
+    this.el.style.left = ((tmp.x * .5 + .5) * innerWidth) + 'px';
+    this.el.style.top = ((-tmp.y * .5 + .5) * innerHeight) + 'px';
+  }
+}
+
+/* ---------- Événements Claude Code → animations ---------- */
+const trunc = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const isTask = (n) => n === 'Task' || n === 'Agent';
+
+function describe(n = '', i = {}) {
+  const f = i.file_path || i.notebook_path || i.path || '';
+  const b = f ? f.split(/[\\/]/).pop() : '';
+  if (n === 'Read') return ['read', '📖 lit ' + b];
+  if (/^(Glob|Grep|LS)$/.test(n)) return ['read', '🔎 fouille ' + trunc(i.pattern || b, 24)];
+  if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(n)) return ['type', '⌨️ code ' + b];
+  if (n === 'Bash') return ['term', '🖥️ ' + trunc(i.command, 30)];
+  if (/^Web(Search|Fetch)$/.test(n)) return ['web', '🌐 ' + trunc(i.query || i.url, 30)];
+  if (/^(TodoWrite|TaskCreate|TaskUpdate)$/.test(n)) return ['plan', '📝 planifie'];
+  if (n.startsWith('mcp__')) return ['web', '🔌 ' + trunc(n.split('__').slice(1).join(' › '), 30)];
+  return ['think', '⚙️ ' + n];
+}
+
+const sessions = new Map();
+let podCount = 0;
+
+// Nom de projet = dernier segment du cwd (chemins Windows ou POSIX).
+function projectName(cwd) {
+  return String(cwd || '').split(/[\\/]+/).filter(Boolean).pop() || 'session';
+}
+// Deux sessions ouvertes sur le même projet : on les numérote.
+function uniqueName(base) {
+  const used = new Set([...sessions.values()].map((s) => s.project));
+  if (!used.has(base)) return base;
+  for (let i = 2; ; i++) if (!used.has(base + ' #' + i)) return base + ' #' + i;
+}
+
+function whoFor(s, ev) {
+  if (!s.subs.length) return s.main;
+  if (ev.agent_id) { // si la version de Claude Code fournit l'id du sous-agent
+    let a = s.subs.find(x => x.agentId === ev.agent_id);
+    if (!a) { a = s.subs.find(x => !x.agentId); if (a) a.agentId = ev.agent_id; }
+    if (a) return a;
+  }
+  return s.subs[s.subs.length - 1]; // heuristique : le dernier sous-agent lancé
+}
+
+// Fin de mission : petit temps mort, puis le mange-debout — sauf rappel entre-temps.
+function finishSub(s, sub, label) {
+  sub.set('idle', label);
+  s.resting.push(sub);
+  setTimeout(() => { if (s.resting.includes(sub)) sub.toCoffee(); }, 1400);
+  s.main.set('read', '📥 lit le rapport');
+}
+
+function handle(ev) {
+  const sid = ev.session_id || 'local', evn = ev.hook_event_name;
+  let s = sessions.get(sid);
+  if (!s) {
+    if (evn === 'SessionEnd') return;
+    const project = uniqueName(projectName(ev.cwd));
+    const pod = new Pod(project, sid.slice(0, 8), TINTS[podCount++ % TINTS.length]);
+    s = {
+      sid, cwd: ev.cwd || '', project, pod, subs: [], resting: [],
+      main: new Agent(sid, { name: project, kind: 'main', pod }),
+      startedAt: Date.now(), tools: 0, slowest: null, lastTool: '', alert: null,
+      bg: [], effort: ev.effort, mode: ev.permission_mode,
+    };
+    s.main.session = s;
+    sessions.set(sid, s);
+  }
+  if (ev.cwd) s.cwd = ev.cwd;
+  if (ev.effort) s.effort = ev.effort;
+  if (ev.permission_mode) s.mode = ev.permission_mode;
+  // `background_tasks` arrive sur Stop et SubagentStop : on garde les tâches en cours.
+  if (Array.isArray(ev.background_tasks)) {
+    s.bg = ev.background_tasks.filter((t) => t.status === 'running');
+    refreshRack();
+  }
+  // Toute activité lève l'alerte : si ça travaille, ça n'attend pas.
+  if (evn === 'UserPromptSubmit' || evn === 'PreToolUse') setAlert(s, null);
+
+  let who = s.main, line = '';
+  switch (evn) {
+    case 'SessionStart': s.main.set('idle', '☕ en poste'); line = 'session démarrée'; break;
+    case 'UserPromptSubmit': s.main.set('think', '💭 ' + trunc(ev.prompt, 40)); line = '« ' + trunc(ev.prompt, 60) + ' »'; break;
+    case 'PreToolUse': {
+      const ti = ev.tool_input || {};
+      if (isTask(ev.tool_name)) {
+        const type = ti.subagent_type || 'agent', task = ti.description || ti.prompt;
+        // Un agent du même type encore en pause est rappelé plutôt que remplacé.
+        const i = s.resting.findIndex((a) => a.name === type);
+        let sub;
+        if (i >= 0) {
+          sub = s.resting.splice(i, 1)[0]; sub.recall(task);
+          line = 'rappelle ' + type + ' : ' + trunc(ti.description, 40);
+        } else {
+          const variant = [...s.subs, ...s.resting].filter((a) => a.name === type).length;
+          sub = new Agent(sid + ':' + (ev.tool_use_id || Math.random().toString(36).slice(2)),
+            { name: type, kind: 'sub', task, pod: s.pod, seated: !!ev._replay, variant });
+          sub.session = s;
+          line = 'recrute ' + type + ' : ' + trunc(ti.description, 40);
+        }
+        sub.toolUseId = ev.tool_use_id; s.subs.push(sub);
+        s.main.set('think', '👉 délègue à ' + type);
+      } else {
+        who = whoFor(s, ev);
+        const [act, label] = describe(ev.tool_name, ti); who.set(act, label); line = label;
+        s.tools++; s.lastTool = ev.tool_name;
+        who.startedTool = { name: ev.tool_name, at: Date.now() };
+      }
+      break;
+    }
+    case 'PostToolUse': {
+      if (!isTask(ev.tool_name)) {
+        if (ev.duration_ms > (s.slowest?.ms ?? 0)) s.slowest = { name: ev.tool_name, ms: ev.duration_ms };
+        const w = whoFor(s, ev); if (w) w.startedTool = null;
+        break;
+      }
+      let i = s.subs.findIndex(a => a.toolUseId && a.toolUseId === ev.tool_use_id);
+      if (i < 0) i = 0;
+      const sub = s.subs[i];
+      if (!sub) break;
+      const r = ev.tool_response || {};
+      if (r.isAsync || r.status === 'async_launched') {
+        // L'appel rend la main en quelques millisecondes : l'agent ne finit pas, il
+        // démarre. On retient son identité pour reconnaître son vrai SubagentStop.
+        sub.agentId = r.agentId;
+        sub.set('think', sub.task ? '💭 ' + trunc(sub.task, 34) : '💭 au travail');
+        who = sub; line = 'parti en mission';
+      } else {
+        s.subs.splice(i, 1);
+        finishSub(s, sub, '✅ terminé');
+        who = sub; line = 'mission terminée → pause café';
+      }
+      break;
+    }
+    case 'SubagentStop': {
+      // Vraie fin d'un agent. `agent_id` permet de désigner le bon, même en parallèle.
+      let i = ev.agent_id ? s.subs.findIndex(a => a.agentId === ev.agent_id) : -1;
+      if (i < 0 && !ev.agent_id) i = s.subs.findIndex(a => !a.agentId);
+      if (i < 0) break;
+      const sub = s.subs.splice(i, 1)[0];
+      finishSub(s, sub, '📤 rend son rapport');
+      sub.say(ev.last_assistant_message);
+      who = sub; line = 'rapport rendu → pause café';
+      break;
+    }
+    case 'Notification':
+      s.main.set('wait', '✋ ' + trunc(ev.message || 'attend ta validation', 36));
+      setAlert(s, ev.notification_type === 'idle_prompt' ? 'idle' : 'permission', ev.message);
+      line = trunc(ev.message, 60); break;
+    case 'Stop':
+      s.main.set('idle', '☕ pause — à toi');
+      setAlert(s, 'done', 'a fini son tour');
+      s.main.say(ev.last_assistant_message);
+      line = 'a fini, attend ta suite'; break;
+    case 'SessionEnd':
+      s.pod.closing = true; // l'îlot part quand le dernier sous-agent a franchi la porte
+      s.subs.forEach(a => a.leave());
+      [...s.resting].forEach(a => a.leave()); // on vide aussi le coin café
+      setAlert(s, null);
+      sessions.delete(sid);
+      s.pod.maybeClose(); // aucun sous-agent en vol : l'îlot se démonte tout de suite
+      line = 'session fermée'; break;
+  }
+  if (line) log((who === s.main ? s.project : s.project + ' › ' + who.name) + ' · ' + line);
+  renderSessions();
+}
+
+/* ---------- Appels : « cette session a besoin de toi » ---------- */
+// C'est le signal qui rend le bureau utile en second ecran : on doit pouvoir le
+// capter sans lire les etiquettes, et meme sans regarder l'onglet.
+const ALERTS = {
+  idle:       { label: 'attend ton input',   color: 0xffb020, emoji: '✋' },
+  permission: { label: 'attend ta validation', color: 0xe0695e, emoji: '✋' },
+  done:       { label: 'a fini son tour',    color: 0x8fcf8a, emoji: '✅' },
+};
+
+function setAlert(s, kind, detail) {
+  if (s.alert?.kind === kind) return;
+  s.alert = kind ? { kind, detail, at: Date.now() } : null;
+  s.pod.setBeacon(kind ? ALERTS[kind].color : null);
+  if (kind && kind !== 'done') ping();
+  refreshAttention();
+}
+
+// Titre de l'onglet + pastille sur la favicon : lisibles depuis la barre des taches.
+const favicon = document.createElement('link');
+favicon.rel = 'icon'; document.head.appendChild(favicon);
+function drawFavicon(n) {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d');
+  x.fillStyle = '#2b221c'; x.beginPath();
+  if (x.roundRect) x.roundRect(2, 2, 60, 60, 14); else x.rect(2, 2, 60, 60);
+  x.fill();
+  x.fillStyle = '#e8743b'; x.fillRect(12, 40, 40, 8);        // le bureau
+  x.fillStyle = '#f4e9dc'; x.fillRect(20, 18, 24, 18);       // l'ecran
+  if (n) {
+    x.fillStyle = '#e0695e'; x.beginPath(); x.arc(48, 16, 15, 0, Math.PI * 2); x.fill();
+    x.fillStyle = '#fff'; x.font = 'bold 22px system-ui'; x.textAlign = 'center';
+    x.fillText(String(n), 48, 24);
+  }
+  favicon.href = c.toDataURL('image/png');
+}
+
+function refreshAttention() {
+  const waiting = [...sessions.values()].filter((s) => s.alert);
+  document.title = waiting.length ? `(${waiting.length}) Claude Office` : 'Claude Office';
+  drawFavicon(waiting.length);
+  renderSessions();
+}
+
+// Son : coupe par defaut, et l'activer compte comme le geste utilisateur que les
+// navigateurs exigent pour autoriser l'audio.
+let audio = null, soundOn = false;
+function ping() {
+  if (!soundOn) return;
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(880, t);
+    o.frequency.exponentialRampToValueAtTime(1320, t + .12);
+    g.gain.setValueAtTime(.0001, t);
+    g.gain.exponentialRampToValueAtTime(.12, t + .02);
+    g.gain.exponentialRampToValueAtTime(.0001, t + .45);
+    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + .5);
+  } catch { /* pas d'audio disponible : tant pis, le visuel suffit */ }
+}
+
+/* ---------- Panneau « Sessions » ---------- */
+const sessionsEl = document.getElementById('sessions'), sessionsListEl = document.getElementById('sessions-list');
+function renderSessions() {
+  sessionsEl.style.display = sessions.size ? 'block' : 'none';
+  sessionsListEl.textContent = '';
+  for (const s of sessions.values()) {
+    const row = document.createElement('div'); row.className = 's';
+    const dot = document.createElement('span'); dot.className = 'dot';
+    dot.style.background = '#' + s.pod.tint.toString(16).padStart(6, '0');
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = s.project;
+    const ct = document.createElement('span'); ct.className = 'ct';
+    const bits = [];
+    if (s.subs.length) bits.push(s.subs.length + ' 🤖');
+    if (s.resting.length) bits.push(s.resting.length + ' ☕');
+    ct.textContent = bits.join(' ') || '—';
+    if (s.alert) { row.dataset.alert = s.alert.kind; ct.textContent = ALERTS[s.alert.kind].emoji + ' ' + ct.textContent; }
+    row.onclick = () => { focusPod(s.pod); select({ session: s }); };
+    row.append(dot, nm, ct); sessionsListEl.appendChild(row);
+  }
+}
+
+/* ---------- Inspection : cliquer un agent, un tapis, ou une ligne du panneau ---------- */
+const detailEl = document.getElementById('detail');
+const unfocusEl = document.getElementById('unfocus');
+const raycaster = new THREE.Raycaster();
+let selection = null; // { agent } ou { session }
+
+const since = (ms) => {
+  const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return sec < 60 ? sec + ' s' : sec < 3600 ? Math.floor(sec / 60) + ' min' : (sec / 3600).toFixed(1) + ' h';
+};
+const sessionOf = (pod) => [...sessions.values()].find((s) => s.pod === pod) ?? null;
+
+function select(sel) {
+  selection = sel;
+  detailEl.style.display = sel ? 'block' : 'none';
+  if (sel) renderDetail();
+}
+function renderDetail() {
+  if (!selection) return;
+  const rows = [];
+  let title, sub;
+  if (selection.agent) {
+    const a = selection.agent, s = a.session;
+    if (!agents.has(a)) return select(null); // l'agent est parti
+    title = (a.kind === 'main' ? '🧠 ' : '🤖 ') + a.name;
+    sub = s ? s.project + ' · ' + s.cwd : '';
+    rows.push(['Rôle', a.kind === 'main' ? 'lead' : 'sous-agent']);
+    rows.push(['État', a.t.textContent || '—']);
+    if (a.task) rows.push(['Mission', trunc(a.task, 60)]);
+    if (a.agentId) rows.push(['agent_id', a.agentId.slice(0, 10)]);
+    if (a.startedTool) rows.push(['Outil en cours', a.startedTool.name + ' · ' + since(a.startedTool.at)]);
+  } else {
+    const s = selection.session;
+    if (!sessions.has(s.sid)) return select(null); // session fermée
+    title = s.project;
+    sub = s.cwd;
+    rows.push(['Session', s.sid.slice(0, 8)]);
+    rows.push(['Ouverte depuis', since(s.startedAt)]);
+    rows.push(['Sous-agents', s.subs.length + ' au travail, ' + s.resting.length + ' au café']);
+    rows.push(['Outils appelés', String(s.tools)]);
+    if (s.lastTool) rows.push(['Dernier outil', s.lastTool]);
+    if (s.slowest) rows.push(['Le plus long', s.slowest.name + ' · ' + (s.slowest.ms / 1000).toFixed(1) + ' s']);
+    if (s.bg?.length) rows.push(['Tâches de fond', String(s.bg.length)]);
+    if (s.effort) rows.push(['Effort', s.effort]);
+    if (s.mode) rows.push(['Permissions', s.mode]);
+    if (s.alert) rows.push(['Appel', ALERTS[s.alert.kind].label + ' · ' + since(s.alert.at)]);
+  }
+  document.getElementById('detail-title').textContent = title;
+  document.getElementById('detail-sub').textContent = sub;
+  const dl = document.getElementById('detail-body');
+  dl.textContent = '';
+  for (const [k, v] of rows) {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+}
+document.getElementById('detail-close').onclick = () => select(null);
+
+// Cadrage sur un îlot : on vise son emplacement et on resserre.
+let focused = null;
+function focusPod(pod) {
+  focused = pod;
+  camTarget.set(pod.slot.x, 0, pod.slot.z);
+  camSpan = 7.5; resize();
+  unfocusEl.hidden = false;
+}
+unfocusEl.onclick = () => { focused = null; unfocusEl.hidden = true; framePods(); };
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  const r = renderer.domElement.getBoundingClientRect();
+  raycaster.setFromCamera(
+    { x: ((e.clientX - r.left) / r.width) * 2 - 1, y: -((e.clientY - r.top) / r.height) * 2 + 1 }, cam);
+  for (const hit of raycaster.intersectObjects(scene.children, true)) {
+    for (let o = hit.object; o; o = o.parent) {
+      if (o.userData?.agent) return select({ agent: o.userData.agent });
+      if (o.userData?.pod) {
+        const s = sessionOf(o.userData.pod);
+        return s ? (focusPod(o.userData.pod), select({ session: s })) : select(null);
+      }
+    }
+  }
+  select(null); // clic dans le vide
+});
+addEventListener('keydown', (e) => { if (e.key === 'Escape') select(null); });
+
+// Son : l'activation vaut geste utilisateur, ce que les navigateurs exigent.
+const soundEl = document.getElementById('sound');
+soundEl.onclick = () => {
+  soundOn = !soundOn;
+  soundEl.setAttribute('aria-pressed', String(soundOn));
+  soundEl.textContent = (soundOn ? '🔔' : '🔕') + ' Son';
+  if (soundOn) ping();
+};
+
+/* ---------- HUD ---------- */
+const logEl = document.getElementById('log'), statusEl = document.getElementById('status'), hintEl = document.getElementById('hint');
+let mode = 'connecting';
+function log(txt) {
+  const d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString('fr-FR') + '  ' + txt;
+  logEl.appendChild(d);
+  while (logEl.children.length > 5) logEl.firstChild.remove();
+}
+function setStatus(m, txt) { mode = m; statusEl.className = 'pill ' + m; statusEl.textContent = txt; }
+
+/* ---------- Mode démo (sans serveur) ---------- */
+let demoTimers = [], demoOn = false;
+const at = (ms, fn) => demoTimers.push(setTimeout(fn, ms));
+const pre = (tool_name, tool_input, tool_use_id) => ({ hook_event_name: 'PreToolUse', tool_name, tool_input, tool_use_id });
+const post = (tool_name, tool_use_id) => ({ hook_event_name: 'PostToolUse', tool_name, tool_use_id, tool_input: {} });
+function scenario(sid, cwd, offset, prompt, steps) {
+  let t = offset;
+  at(t, () => handle({ session_id: sid, cwd, hook_event_name: 'SessionStart' })); t += 900;
+  at(t, () => handle({ session_id: sid, cwd, hook_event_name: 'UserPromptSubmit', prompt })); t += 1800;
+  for (const [dt, o] of steps) { t += dt; const e = { session_id: sid, cwd, ...o }; at(t, () => handle(e)); }
+  return t;
+}
+function startDemo() {
+  if (demoOn) return;
+  demoOn = true; demoTimers = []; setStatus('demo', 'Démo');
+  COFFEE_SEC = Number(params.get('coffee')) || 22; // en démo, la pause est abrégée
+  const endA = scenario('demo-A', 'C:/dev/boutique-api', 0, 'Ajoute un export CSV des commandes', [
+    [0, pre('TodoWrite', {})],
+    [1500, pre('Agent', { subagent_type: 'Explore', description: 'Trouver le code des commandes' }, 'a1')],
+    [2600, pre('Grep', { pattern: 'class Order' })],
+    [1800, pre('Read', { file_path: 'src/orders/order.service.ts' })],
+    [1800, pre('Glob', { pattern: 'src/**/*.export.ts' })],
+    [1600, { hook_event_name: 'SubagentStop' }],
+    [600, post('Agent', 'a1')],
+    [2000, pre('WebSearch', { query: 'papaparse unparse options' })],
+    [2200, pre('Edit', { file_path: 'src/orders/export.ts' })],
+    [2600, pre('Write', { file_path: 'src/orders/export.spec.ts' })],
+    [2400, pre('Bash', { command: 'npm test -- export' })],
+    [2600, { hook_event_name: 'Notification', message: 'Claude a besoin de ta permission pour git push' }],
+    [3500, pre('Bash', { command: 'git push origin feat/export-csv' })],
+    [2000, { hook_event_name: 'Stop' }],
+  ]);
+  const endB = scenario('demo-B', 'C:/dev/portail-client', 4000, 'Corrige le bug de pagination', [
+    [0, pre('Agent', { subagent_type: 'general-purpose', description: 'Reproduire le bug de pagination' }, 'b1')],
+    [2500, pre('Bash', { command: 'npm run dev' })],
+    [2500, pre('Read', { file_path: 'src/api/paginate.ts' })],
+    [2000, { hook_event_name: 'SubagentStop' }], [500, post('Agent', 'b1')],
+    [1500, pre('Agent', { subagent_type: 'Plan', description: 'Plan du correctif' }, 'b2')],
+    [2600, pre('Read', { file_path: 'src/api/cursor.ts' })],
+    [2000, { hook_event_name: 'SubagentStop' }], [500, post('Agent', 'b2')],
+    [1500, pre('Edit', { file_path: 'src/api/paginate.ts' })],
+    [2500, pre('Bash', { command: 'npm test' })],
+    [2000, { hook_event_name: 'Stop' }],
+  ]);
+  const end = Math.max(endA, endB);
+  at(end + 5000, () => ['demo-A', 'demo-B'].forEach(sid => handle({ session_id: sid, hook_event_name: 'SessionEnd' })));
+  at(end + 11000, () => { demoOn = false; startDemo(); });
+}
+function stopDemo() {
+  demoTimers.forEach(clearTimeout); demoTimers = []; demoOn = false;
+  for (const sid of [...sessions.keys()]) if (sid.startsWith('demo-')) handle({ session_id: sid, hook_event_name: 'SessionEnd' });
+}
+
+/* ---------- Connexion au serveur ---------- */
+const server = params.get('server') ?? (location.protocol.startsWith('http') ? '' : null);
+if (server === null || params.has('demo')) startDemo();
+else {
+  let opened = false;
+  try {
+    const es = new EventSource(server + '/stream');
+    es.onopen = () => { opened = true; stopDemo(); setStatus('live', 'Live'); };
+    // Une erreur avalée ici donnerait une pièce vide sans explication : on la montre.
+    es.onmessage = (e) => {
+      try { handle(JSON.parse(e.data)); }
+      catch (err) { console.error('[claude-office]', err, e.data); log('⚠️ ' + err.message); }
+    };
+    es.onerror = () => { if (!opened) { es.close(); startDemo(); } else setStatus('connecting', 'Reconnexion…'); };
+  } catch { startDemo(); }
+  setTimeout(() => { if (!opened) startDemo(); }, 2500);
+}
+
+/* ---------- Boucle ---------- */
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), .05), t = clock.elapsedTime;
+  for (const a of [...agents]) a.update(dt, t);
+  for (const p of pods) {
+    p.sign.quaternion.copy(cam.quaternion); // panneaux toujours face caméra
+    if (p.beaconColor != null) {            // battement du gyrophare
+      const k = .45 + .55 * Math.abs(Math.sin(t * 4));
+      p.beacon.material.emissiveIntensity = k * 2;
+      p.beaconLight.intensity = k * 16;
+      p.beacon.scale.setScalar(.9 + k * .25);
+    }
+  }
+  coffeeLed.material.emissiveIntensity = .5 + .5 * Math.sin(t * 3);
+  rackLeds.forEach((led, i) => {
+    if (led.material.emissive.getHex()) led.material.emissiveIntensity = .5 + .5 * Math.sin(t * 6 + i * 1.7);
+  });
+  controls.target.lerp(camTarget, 1 - Math.exp(-dt * 2.5)); // glisse vers le nouveau cadrage
+  controls.update();
+  renderer.render(scene, cam);
+  for (const a of agents) a.updateLabel();
+  if (selection) renderDetail();
+  hintEl.style.display = mode === 'live' && sessions.size === 0 ? 'block' : 'none';
+});
+</script>
+</body>
+</html>
