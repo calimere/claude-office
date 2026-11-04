@@ -32,6 +32,18 @@ claude (CLI) ──hooks──▶ curl POST /event ──▶ server.js ──SSE
   burndown) et le **modèle de données** punaisé à côté. La **baie serveurs** occupe l'angle
   du fond à droite : trois armoires, dont celle du milieu allume une LED par commande shell
   encore en cours (`background_tasks` des hooks).
+- Un **chat** vit dans la pièce. Il dort sur le dossier du canapé, s'étire, descend,
+  traverse, se réinstalle ailleurs — accoudoir, table basse, tapis devant la télé,
+  parquet près des places debout — et recommence toutes les une à trois minutes. Il ne
+  dit rien sur tes sessions : c'est la seule chose de la pièce dont l'activité ne dépend
+  pas de toi, et c'est exactement à ça qu'elle sert.
+- De la **vapeur** monte des tasses du comptoir, et de celles que tiennent les agents en
+  pause — une place du bar occupée devient une source.
+- De la **poussière** dérive dans l'air. Elle ne signifie rien ; elle donne de l'air à
+  la pièce.
+- Les **suspensions oscillent** autour de leur attache et les **feuillages ploient**,
+  chacun à son rythme et deux fois plus lentement — rien ne doit battre la mesure.
+
 - Le panneau **Sessions** (en haut à droite) liste les projets actifs et, en pied,
   l'effectif de la maison. La caméra se recentre selon le nombre d'îlots.
 - Les bureaux ont **deux écrans**, allumés de la même couleur que l'outil en cours.

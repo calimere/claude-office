@@ -448,15 +448,20 @@ function refreshRack() {
   rackLeds.forEach((led, i) => led.material.emissive.setHex(i < n ? 0x6fcf97 : 0x000000));
 }
 
+// Le feuillage est un groupe distinct du pot : il peut ainsi ployer tres legerement
+// autour de sa base, comme sous un courant d'air. Le pot, lui, ne bouge pas.
+const plants = [];
 function plant(x, z, s = 1) {
   const pot = new THREE.Mesh(new THREE.CylinderGeometry(.34 * s, .26 * s, .55 * s, 12),
     new THREE.MeshStandardMaterial({ color: 0xb06a44, roughness: .85 }));
   pot.position.set(x, .27 * s, z); pot.castShadow = true; scene.add(pot);
+  const foliage = new THREE.Group(); foliage.position.set(x, 0, z); scene.add(foliage);
   for (const [dx, dy, dz, r] of [[0, .95, 0, .52], [.26, .72, .14, .34], [-.22, .76, -.16, .3]]) {
     const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(r * s, 0),
       new THREE.MeshStandardMaterial({ color: 0x5d8f56, flatShading: true, roughness: .9 }));
-    leaf.position.set(x + dx * s, dy * s, z + dz * s); leaf.castShadow = true; scene.add(leaf);
+    leaf.position.set(dx * s, dy * s, dz * s); leaf.castShadow = true; foliage.add(leaf);
   }
+  plants.push({ g: foliage, ph: Math.abs(x * 3.1 + z * 1.7) % 6.28 });
 }
 // Les deux plantes de l'avant droit ont cede la place au coin cafe. Celle qui avait
 // repris l'angle du fond a droite laisse maintenant la place a la baie serveurs :
@@ -605,6 +610,255 @@ for (const [dz, col] of [[-.5, 0x2f3640], [-.26, 0x2f6fb0], [-.02, 0xb03a2e]]) {
 const eraser = box(.1, .12, .34, 0x3f3630);
 eraser.position.set(-ROOM.w / 2 + .16, 1.33, -3.8); scene.add(eraser);
 
+/* ---------- La vie de la piece : chat, vapeur, poussiere ---------- */
+// Rien ici ne dit quoi que ce soit sur les sessions. C'est du decor anime, et c'est
+// precisement le point : une piece ou il ne se passe rien quand personne ne travaille
+// est une piece morte. Ce qui donne envie de regarder, c'est ce qui bouge sans raison.
+
+// Point flou partage par la vapeur et la poussiere : un carre net ferait des confettis.
+function softDot() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(.35, 'rgba(255,255,255,.5)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+const DOT = softDot();
+
+// Nuage de points generique. La couleur est portee par sommet : en melange additif,
+// un point qui tend vers le noir disparait — c'est ainsi qu'on fait varier l'opacite
+// particule par particule, ce qu'un PointsMaterial seul ne permet pas.
+function cloud(n, size, tint) {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({
+    map: DOT, size, transparent: true, depthWrite: false, vertexColors: true,
+    blending: THREE.AdditiveBlending, sizeAttenuation: true,
+  }));
+  pts.frustumCulled = false; scene.add(pts);
+  return { pts, pos, col, tint, n, geo };
+}
+
+/* --- Vapeur : au-dessus des tasses du comptoir, et des mains qui en tiennent une --- */
+const STEAM = cloud(34, .17, [1, .93, .84]);
+const STEAM_LIFE = 2.6;
+// Les ages sont echelonnes des le depart : sans ca, toutes les particules naissent et
+// meurent ensemble et le panache bat comme un coeur au lieu de monter. En attendant sa
+// premiere apparition, une particule patiente sous le plancher, hors de vue.
+const steamP = [...Array(STEAM.n)].map(() => ({ age: Math.random() * STEAM_LIFE, x: 0, y: -99, z: 0, vx: 0, vz: 0 }));
+// Les tasses posees fument toujours ; une place du bar ne fume que si quelqu'un l'occupe.
+function steamSources() {
+  const out = [[10.3, 1.24, 9.15], [10.3, 1.24, 9.6], [10.3, 1.24, 10.05]];
+  for (const k of COFFEE_SPOTS) if (k.busy) out.push([k.pos.x, 1.08, k.pos.z]);
+  return out;
+}
+
+/* --- Poussiere : elle ne dit rien, elle donne de l'air a la piece --- */
+const DUST = cloud(230, .055, [1, .86, .66]);
+const dustP = [...Array(DUST.n)].map(() => ({
+  x: (Math.random() - .5) * 28, y: .3 + Math.random() * 3.3, z: (Math.random() - .5) * 20.5,
+  ph: Math.random() * 6.28, sp: .018 + Math.random() * .045, br: .18 + Math.random() * .4,
+}));
+
+/* ---------- Le chat ---------- */
+// Il ne sert a rien, et c'est tout l'interet : c'est la seule chose de la piece dont
+// l'activite ne depend pas de toi. Il dort, s'etire, change de place, recommence.
+function makeCat() {
+  const g = new THREE.Group(); scene.add(g);
+  const fur = new THREE.MeshStandardMaterial({ color: 0xc98a52, roughness: .92 });
+  const body = new THREE.Group(); g.add(body);
+  const trunk = box(.19, .18, .40, 0xc98a52, { roughness: .92 });
+  trunk.position.y = .15; body.add(trunk);
+  for (const dz of [-.10, .02, .14]) { // rayures
+    const stripe = box(.197, .186, .035, 0xa96e3c, { roughness: .92 });
+    stripe.position.set(0, .15, dz); body.add(stripe);
+  }
+  const chest = box(.13, .09, .1, 0xf0ddc4, { roughness: .92 });
+  chest.position.set(0, .09, -.15); body.add(chest);
+
+  const head = new THREE.Group(); head.position.set(0, .26, -.23); body.add(head);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(.105, 14, 12), fur);
+  skull.castShadow = true; head.add(skull);
+  const muzzle = box(.085, .055, .07, 0xf0ddc4, { roughness: .92 });
+  muzzle.position.set(0, -.03, -.08); head.add(muzzle);
+  const ears = [];
+  for (const sx of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(.045, .09, 4), fur);
+    ear.position.set(sx * .06, .1, .015); ear.rotation.z = sx * .2; head.add(ear); ears.push(ear);
+  }
+  const legs = [];
+  for (const [lx, lz] of [[-.06, -.13], [.06, -.13], [-.06, .13], [.06, .13]]) {
+    const leg = box(.05, .13, .05, 0xb87a46, { roughness: .92 });
+    leg.position.set(lx, .065, lz); body.add(leg); legs.push(leg);
+  }
+  // Queue en deux segments : le bout fouette plus vite que la base.
+  const tail = new THREE.Group(); tail.position.set(0, .18, .19); body.add(tail);
+  const t1 = box(.045, .045, .18, 0xc98a52, { roughness: .92 }); t1.position.z = .09; tail.add(t1);
+  const tip = new THREE.Group(); tip.position.z = .18; tail.add(tip);
+  const t2 = box(.04, .04, .15, 0xa96e3c, { roughness: .92 }); t2.position.z = .075; tip.add(t2);
+  return { g, body, trunk, head, ears, legs, tail, tip };
+}
+
+// Ses places. Toutes dans la bande avant, toutes atteignables par la voie degagee
+// devant le canape : le chat ne traverse jamais un ilot.
+const CAT_LANE_Z = COUCH_LANE_Z;
+const CAT_SPOTS = [
+  { pos: new V3(LOUNGE_X + .9, .99, LOUNGE_Z - .53), face: Math.PI, sleep: true },  // dossier du canape
+  { pos: new V3(LOUNGE_X - 1.8, .81, LOUNGE_Z), face: Math.PI, sleep: false },      // accoudoir
+  { pos: new V3(LOUNGE_X, .47, 9.85), face: 0, sleep: false },                      // table basse
+  { pos: new V3(LOUNGE_X - 1.3, .03, 9.95), face: Math.PI, sleep: true },           // tapis, devant la tele
+  { pos: new V3(-5.5, .02, 9.3), face: -Math.PI / 2, sleep: false },                // parquet, pres des places debout
+];
+
+const cat = makeCat();
+const CAT = {
+  spot: CAT_SPOTS[0], next: null, state: 'rest', t0: 0, until: 25,
+  from: new V3(), to: new V3(), curl: 1, face: CAT_SPOTS[0].face,
+};
+cat.g.position.copy(CAT_SPOTS[0].pos);
+cat.g.rotation.y = CAT_SPOTS[0].face;
+
+// Duree d'une sieste : assez longue pour qu'on ne le surprenne pas a tourner en rond,
+// assez courte pour qu'on le voie bouger si on regarde quelques minutes.
+const catNap = () => 55 + Math.random() * 110;
+const ease = (p) => p * p * (3 - 2 * p);
+
+function updateCat(dt, t) {
+  const g = cat.g;
+  const S = CAT.state;
+
+  if (S === 'rest') {
+    CAT.curl += ((CAT.spot.sleep ? 1 : 0) - CAT.curl) * Math.min(1, dt * 2.5);
+    if (t >= CAT.until) { CAT.state = 'stretch'; CAT.t0 = t; }
+  } else if (S === 'stretch') {
+    const p = Math.min(1, (t - CAT.t0) / 1.5);
+    CAT.curl += (0 - CAT.curl) * Math.min(1, dt * 3);
+    const arch = Math.sin(p * Math.PI);
+    cat.trunk.scale.z = 1 + .28 * arch;
+    cat.body.position.y = .035 * arch;
+    cat.head.rotation.x = -.5 * arch;
+    if (p >= 1) {
+      cat.trunk.scale.z = 1; cat.body.position.y = 0; cat.head.rotation.x = 0;
+      let n = CAT.spot;
+      while (n === CAT.spot) n = CAT_SPOTS[(Math.random() * CAT_SPOTS.length) | 0];
+      CAT.next = n;
+      CAT.from.copy(g.position);
+      CAT.to.set(g.position.x, .02, CAT_LANE_Z);
+      CAT.state = 'down'; CAT.t0 = t;
+    }
+  } else if (S === 'down' || S === 'up') {
+    const dur = S === 'down' ? .5 : .62;
+    const p = Math.min(1, (t - CAT.t0) / dur);
+    g.position.lerpVectors(CAT.from, CAT.to, ease(p));
+    g.position.y += Math.sin(p * Math.PI) * (S === 'down' ? .12 : .22); // l'arc du saut
+    if (p >= 1) {
+      g.position.copy(CAT.to);
+      if (S === 'down') { CAT.state = 'walk'; }
+      else { CAT.spot = CAT.next; CAT.face = CAT.spot.face; CAT.state = 'rest'; CAT.until = t + catNap(); }
+    }
+  } else if (S === 'walk') {
+    const tx = CAT.next.pos.x, d = tx - g.position.x, step = 1.15 * dt;
+    if (Math.abs(d) <= step) {
+      g.position.x = tx;
+      CAT.from.copy(g.position); CAT.to.copy(CAT.next.pos);
+      CAT.state = 'up'; CAT.t0 = t;
+    } else {
+      g.position.x += Math.sign(d) * step;
+      CAT.face = Math.sign(d) > 0 ? -Math.PI / 2 : Math.PI / 2;
+      // demarche : le corps monte et descend doucement
+      cat.body.position.y = Math.abs(Math.sin(t * 9)) * .022;
+      cat.legs.forEach((l, i) => { l.rotation.x = Math.sin(t * 9 + i * 1.6) * .5; });
+    }
+  }
+
+  if (S !== 'walk') cat.legs.forEach((l) => { l.rotation.x = 0; });
+  // Orientation : on glisse vers l'angle voulu plutot que de pivoter d'un bloc.
+  let da = CAT.face - g.rotation.y;
+  while (da > Math.PI) da -= 2 * Math.PI;
+  while (da < -Math.PI) da += 2 * Math.PI;
+  g.rotation.y += da * Math.min(1, dt * 6);
+
+  // Pose : enroule quand il dort, deplie quand il veille.
+  const c = CAT.curl;
+  if (S !== 'stretch') {
+    cat.body.position.y = (S === 'walk' ? cat.body.position.y : 0) - .035 * c;
+    cat.trunk.scale.z = 1 - .16 * c;
+    cat.head.position.set(0, .26 - .12 * c, -.23 + .09 * c);
+    cat.head.rotation.x = .5 * c;
+  }
+  cat.legs.forEach((l) => { l.scale.y = 1 - .7 * c; l.position.y = .065 * (1 - .7 * c); });
+  cat.trunk.scale.y = 1 + (.02 + .035 * c) * Math.sin(t * (c ? 1.1 : 1.9)); // il respire
+  // La queue s'enroule au repos, fouette quand il veille.
+  cat.tail.rotation.y = c * 1.45;
+  cat.tail.rotation.x = -.2 + (1 - c) * .28 * Math.sin(t * 1.3);
+  cat.tip.rotation.x = (1 - c) * .45 * Math.sin(t * 2.2 + 1);
+  // Oreille : un bref frisson de temps en temps, jamais en continu.
+  const tw = Math.pow(Math.max(0, Math.sin(t * .37)), 60);
+  cat.ears[0].rotation.x = tw * .5 * Math.sin(t * 26);
+}
+
+/* ---------- Mise a jour groupee du decor anime ---------- */
+function updateLife(dt, t) {
+  updateCat(dt, t);
+
+  // Vapeur : chaque particule monte, s'ecarte un peu, s'eteint, et repart d'une source.
+  const src = steamSources();
+  for (let i = 0; i < STEAM.n; i++) {
+    const p = steamP[i];
+    p.age += dt;
+    if (p.age >= STEAM_LIFE) { // sur l'age seul : tester aussi y resynchroniserait tout
+      const s0 = src[(Math.random() * src.length) | 0];
+      p.age = 0; p.x = s0[0]; p.y = s0[1]; p.z = s0[2];
+      p.vx = (Math.random() - .5) * .09; p.vz = (Math.random() - .5) * .09;
+    }
+    const k = p.age / STEAM_LIFE;
+    p.y += (.26 + k * .18) * dt;
+    p.x += p.vx * dt; p.z += p.vz * dt;
+    STEAM.pos[i * 3] = p.x; STEAM.pos[i * 3 + 1] = p.y; STEAM.pos[i * 3 + 2] = p.z;
+    // Monte vite, s'efface lentement : une volute ne clignote pas.
+    const a = Math.sin(Math.min(1, k * 1.15) * Math.PI) * .5;
+    STEAM.col[i * 3] = STEAM.tint[0] * a;
+    STEAM.col[i * 3 + 1] = STEAM.tint[1] * a;
+    STEAM.col[i * 3 + 2] = STEAM.tint[2] * a;
+  }
+  STEAM.geo.attributes.position.needsUpdate = true;
+  STEAM.geo.attributes.color.needsUpdate = true;
+
+  // Poussiere : derive lente, retour en bas quand elle sort par le haut.
+  for (let i = 0; i < DUST.n; i++) {
+    const p = dustP[i];
+    p.y += p.sp * dt;
+    if (p.y > 3.6) { p.y = .3; p.x = (Math.random() - .5) * 28; p.z = (Math.random() - .5) * 20.5; }
+    const wob = Math.sin(t * .22 + p.ph) * .5;
+    DUST.pos[i * 3] = p.x + wob;
+    DUST.pos[i * 3 + 1] = p.y;
+    DUST.pos[i * 3 + 2] = p.z + Math.cos(t * .18 + p.ph) * .4;
+    const a = p.br * (.55 + .45 * Math.sin(t * .8 + p.ph * 3)); // scintillement
+    DUST.col[i * 3] = DUST.tint[0] * a;
+    DUST.col[i * 3 + 1] = DUST.tint[1] * a;
+    DUST.col[i * 3 + 2] = DUST.tint[2] * a;
+  }
+  DUST.geo.attributes.position.needsUpdate = true;
+  DUST.geo.attributes.color.needsUpdate = true;
+
+  // Les suspensions oscillent autour de leur attache, chacune a son rythme.
+  for (const p of pods) {
+    p.lamp.rotation.z = .014 * Math.sin(t * .66 + p.lampPhase);
+    p.lamp.rotation.x = .010 * Math.sin(t * .49 + p.lampPhase * 1.4);
+  }
+  // Les feuillages ploient, deux fois plus lentement : rien ne doit battre la mesure.
+  for (const pl of plants) {
+    pl.g.rotation.z = .035 * Math.sin(t * .33 + pl.ph);
+    pl.g.rotation.x = .028 * Math.sin(t * .27 + pl.ph * .7);
+  }
+}
+
+
 
 /* ---------- Bureaux ---------- */
 // Memes teintes qu'avant (vert, ambre, bleu, violet, taupe, rose, rouge) desaturees :
@@ -714,16 +968,22 @@ class Pod {
     rug.position.set(x, .045, z); rug.castShadow = false;
     rug.userData.pod = this; this.g.add(rug);
 
-    // Suspension au-dessus de l'îlot : c'est elle qui donne le halo chaud.
-    const cord = box(.035, 1.1, .035, 0x3a302a); cord.position.set(x, 3.95, z); this.g.add(cord);
+    // Suspension au-dessus de l'îlot : c'est elle qui donne le halo chaud. Toutes ses
+    // pièces sont réunies dans un groupe ancré au plafond (y = 4,5), parce qu'une
+    // suspension qui oscille tourne autour de son point d'attache : la rotation du
+    // groupe suffit alors, là où des positions absolues auraient demandé de recalculer
+    // chaque pièce. Les décalages locaux redonnent exactement les hauteurs d'avant.
+    this.lamp = new THREE.Group(); this.lamp.position.set(x, 4.5, z); this.g.add(this.lamp);
+    this.lampPhase = (hash(title) % 628) / 100;
+    const cord = box(.035, 1.1, .035, 0x3a302a); cord.position.set(0, -.55, 0); this.lamp.add(cord);
     const lampShade = new THREE.Mesh(new THREE.ConeGeometry(.78, .62, 20, 1, true),
       new THREE.MeshStandardMaterial({ color: tint, roughness: .75, side: THREE.DoubleSide }));
-    lampShade.position.set(x, 3.1, z); this.g.add(lampShade);
+    lampShade.position.set(0, -1.4, 0); this.lamp.add(lampShade);
     const bulb = new THREE.Mesh(new THREE.SphereGeometry(.15, 12, 10),
       new THREE.MeshStandardMaterial({ color: 0xfff1d4, emissive: 0xffc980, emissiveIntensity: 1.5 }));
-    bulb.position.set(x, 2.86, z); this.g.add(bulb);
-    const lamp = new THREE.PointLight(0xffc98a, 15, 11, 2);
-    lamp.position.set(x, 2.8, z); this.g.add(lamp);
+    bulb.position.set(0, -1.64, 0); this.lamp.add(bulb);
+    const lampLight = new THREE.PointLight(0xffc98a, 15, 11, 2);
+    lampLight.position.set(0, -1.7, 0); this.lamp.add(lampLight);
 
     // Cloisons : bois en bas, verre dépoli en haut. Trois côtés ; l'îlot s'ouvre sur
     // l'allée centrale, par où tout le monde entre et sort.
@@ -1737,6 +1997,7 @@ renderer.setAnimationLoop(() => {
       p.beacon.scale.setScalar(.9 + k * .25);
     }
   }
+  updateLife(dt, t);
   coffeeLed.material.emissiveIntensity = .5 + .5 * Math.sin(t * 3);
   // La tele ne s'allume que si quelqu'un est sur le canapé : une pièce vide reste
   // éteinte. Le scintillement imite un jeu, pas une image fixe.
