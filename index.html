@@ -262,12 +262,14 @@ function wordmarkTexture() {
     x.fillStyle = '#f0e2cf'; x.fillText(SIGN, W / 2, 118);
   }
   if (SIGN_SUB) {
-    // Sous-titre espace lettre a lettre ; le pas se resserre si le mot est long.
-    fit(SIGN_SUB, 46, 500);
-    x.fillStyle = '#d2a35c';
-    const step = Math.min(44, (W - PAD * 2) / Math.max(1, SIGN_SUB.length));
+    // Sous-titre espace lettre a lettre, cale sur la largeur du mot principal pour
+    // que les deux lignes forment un bloc. Le ton est clair : l'or d'origine se
+    // confondait avec le platre du mur, et l'enseigne n'est pas eclairee.
+    fit(SIGN_SUB, 62, 600);
+    x.fillStyle = '#ecd6b4';
+    const step = Math.min(68, (W - PAD * 2) / Math.max(1, SIGN_SUB.length));
     SIGN_SUB.split('').forEach((ch, i) =>
-      x.fillText(ch, W / 2 + (i - (SIGN_SUB.length - 1) / 2) * step, 188));
+      x.fillText(ch, W / 2 + (i - (SIGN_SUB.length - 1) / 2) * step, 196));
   }
   const t = new THREE.CanvasTexture(c); t.anisotropy = 8; return t;
 }
@@ -665,23 +667,29 @@ for (const z of POD_Z) for (const x of POD_X) podSlots.push({ x, z, count: 0 });
 // qu'en panneau suspendu — un panneau en l'air masquait les bureaux du fond et
 // flottait sans rien toucher ; un tapis ancre l'équipe à son emplacement.
 function matTexture(title, sub, tint) {
-  const W = 512, H = 192, c = document.createElement('canvas');
+  const W = 640, H = 200, PAD = 38, c = document.createElement('canvas');
   c.width = W; c.height = H;
   const x = c.getContext('2d');
   const hex = '#' + tint.toString(16).padStart(6, '0');
   // Laine teintée a la couleur du projet, champ sombre au centre pour que le nom
   // ressorte sur le parquet.
   x.fillStyle = hex; x.fillRect(0, 0, W, H);
-  x.fillStyle = 'rgba(34,24,17,.80)'; x.fillRect(13, 13, W - 26, H - 26);
-  x.strokeStyle = hex; x.lineWidth = 3; x.strokeRect(24, 24, W - 48, H - 48);
+  x.fillStyle = 'rgba(34,24,17,.82)'; x.fillRect(14, 14, W - 28, H - 28);
+  x.strokeStyle = hex; x.lineWidth = 3; x.strokeRect(25, 25, W - 50, H - 50);
   // Frange tissee en haut et en bas : ca se lit comme un tapis, pas comme une dalle.
   x.fillStyle = hex;
-  for (let i = 0; i < 45; i++) { x.fillRect(14 + i * 11, 1, 5, 9); x.fillRect(14 + i * 11, H - 10, 5, 9); }
+  for (let i = 0; i < 56; i++) { x.fillRect(15 + i * 11, 1, 5, 10); x.fillRect(15 + i * 11, H - 11, 5, 10); }
   x.textAlign = 'center';
-  x.fillStyle = '#f7eee2'; x.font = '700 64px system-ui,Segoe UI,sans-serif';
-  x.fillText(title, W / 2, 108, W - 76);
-  x.fillStyle = 'rgba(247,238,226,.5)'; x.font = '400 28px ui-monospace,Consolas,monospace';
-  x.fillText(sub, W / 2, 148, W - 76);
+  // Un nom long doit RETRECIR, pas s'ecraser : le maxWidth de fillText le rendait
+  // filiforme et illisible de loin. On cherche le plus grand corps qui tienne.
+  let size = 92;
+  for (; size > 26; size -= 3) {
+    x.font = '700 ' + size + 'px system-ui,Segoe UI,sans-serif';
+    if (x.measureText(title).width <= W - PAD * 2) break;
+  }
+  x.fillStyle = '#f7eee2'; x.fillText(title, W / 2, 112);
+  x.fillStyle = 'rgba(247,238,226,.46)'; x.font = '400 30px ui-monospace,Consolas,monospace';
+  x.fillText(sub, W / 2, 158, W - PAD * 2);
   const t = new THREE.CanvasTexture(c); t.anisotropy = 8; return t;
 }
 
@@ -736,10 +744,10 @@ class Pod {
 
     // Descente de lit devant l'ouverture, entre le portillon et l'allée : elle porte
     // le nom du projet. Posee au ras du sol, a l'exterieur du grand tapis de l'ilot.
-    this.mat = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 1.2),
+    this.mat = new THREE.Mesh(new THREE.PlaneGeometry(4.0, 1.25),
       new THREE.MeshBasicMaterial({ map: matTexture(title, sub, tint), transparent: true }));
     this.mat.rotation.x = -Math.PI / 2;
-    this.mat.position.set(x, .04, z + 3.6 * open);
+    this.mat.position.set(x, .04, z + 3.8 * open);
     this.mat.userData.pod = this; // cliquable comme le tapis de l'ilot
     this.g.add(this.mat);
 
@@ -1181,10 +1189,44 @@ class Agent {
     if (a !== 'think') c.armR.rotation.z = 0;
     this.desk?.setScreen(a, t);
   }
-  updateLabel() {
+  // Position a l'ecran, sans toucher au DOM : la mise en page est faite en une passe
+  // par layoutLabels(), qui a besoin de les connaitre toutes avant d'en placer une.
+  projectLabel() {
     tmp.copy(this.c.g.position); tmp.y += 2.3; tmp.project(cam);
-    this.el.style.left = ((tmp.x * .5 + .5) * innerWidth) + 'px';
-    this.el.style.top = ((-tmp.y * .5 + .5) * innerHeight) + 'px';
+    this.lx = (tmp.x * .5 + .5) * innerWidth;
+    this.ly = (-tmp.y * .5 + .5) * innerHeight;
+  }
+}
+
+// Deux agents cote a cote — deux employes sur le canape, par exemple — donnaient deux
+// etiquettes superposees, dont une illisible. On les empile : les plus hautes d'abord,
+// et chacune redescend tant qu'elle en recouvre une deja posee dans sa colonne.
+//
+// Lectures et ecritures du DOM sont separees en deux boucles : les melanger forcerait
+// un recalcul de mise en page du navigateur a chaque etiquette, a chaque frame.
+const LABEL_GAP = 4;
+function layoutLabels() {
+  const list = [];
+  for (const a of agents) { a.projectLabel(); list.push(a); }
+  for (const a of list) { a.lw = a.el.offsetWidth || 120; a.lh = a.el.offsetHeight || 34; }
+  list.sort((p, q) => p.ly - q.ly);
+  const placed = [];
+  for (const a of list) {
+    const x0 = a.lx - a.lw / 2, x1 = a.lx + a.lw / 2;
+    let y = a.ly;
+    // Quelques passes suffisent ; la borne evite toute boucle folle si ca se croise.
+    for (let pass = 0; pass < list.length + 1; pass++) {
+      let moved = false;
+      for (const p of placed) {
+        if (x1 <= p.x0 || p.x1 <= x0) continue;        // colonnes disjointes
+        if (y - a.lh >= p.y || y <= p.y - p.h) continue; // deja separees
+        y = p.y + a.lh + LABEL_GAP; moved = true;
+      }
+      if (!moved) break;
+    }
+    placed.push({ x0, x1, y, h: a.lh });
+    a.el.style.left = a.lx + 'px';
+    a.el.style.top = y + 'px';
   }
 }
 
@@ -1707,7 +1749,7 @@ renderer.setAnimationLoop(() => {
   controls.target.lerp(camTarget, 1 - Math.exp(-dt * 2.5)); // glisse vers le nouveau cadrage
   controls.update();
   renderer.render(scene, cam);
-  for (const a of agents) a.updateLabel();
+  layoutLabels();
   if (selection) renderDetail();
   hintEl.style.display = mode === 'live' && sessions.size === 0 ? 'block' : 'none';
 });
