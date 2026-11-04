@@ -9,24 +9,28 @@ claude (CLI) ──hooks──▶ curl POST /event ──▶ server.js ──SSE
 ```
 
 - Chaque **session** Claude Code = un **îlot** de 4 bureaux, cloisonné (bois + verre
-  dépoli), posé sur un tapis de couleur et surmonté d'un panneau au nom du projet
-  (dernier segment du `cwd` reçu dans les hooks). Deux sessions sur le même projet sont
-  numérotées (`mon-projet #2`). Chaque îlot s'ouvre sur l'allée centrale ; tous les
-  déplacements passent par le couloir de gauche puis cette allée.
+  dépoli), posé sur un tapis de couleur. Une **descente de lit** devant l'ouverture porte
+  le nom du projet (dernier segment du `cwd` reçu dans les hooks). Deux sessions sur le
+  même projet sont numérotées (`mon-projet #2`). Chaque îlot s'ouvre sur l'allée centrale ;
+  tous les déplacements passent par le couloir de gauche puis cette allée.
 - Le « Lead » (perso orange) **tient le poste** : il est assis dès le début de la session
   et ne franchit jamais la porte. L'îlot reste en place même quand il ne fait rien.
-- Chaque appel à l'outil **Task/Agent** = un sous-agent qui entre par la porte, s'installe
-  **dans l'îlot de son lead**, bosse, puis repart. Seuls les sous-agents circulent.
-- À la fin de la session, l'îlot est démonté une fois le dernier sous-agent sorti, et son
+- Chaque appel à l'outil **Task/Agent** affecte un employé à l'îlot : il s'installe à un
+  bureau, bosse, puis retourne à l'open space. Voir *La maison et ses employés* plus bas.
+- À la fin de la session, l'îlot est démonté une fois ses occupants partis, et son
   emplacement est rendu disponible.
 - Le **coin café** (bar + mange-debout) occupe la bande libre à l'avant droit, devant
   les îlots. On y accède par l'allée centrale puis une voie dédiée (`CAFE_LANE_X`)
   qui passe entre le comptoir et les places debout.
-- Un sous-agent qui a fini ne disparaît pas : il va au **mange-debout** boire un café.
-  Si la session relance un agent du **même type**, il est rappelé à un bureau de l'îlot ;
-  sinon il s'en va au bout de **5 minutes** (`?coffee=30` pour raccourcir le délai).
-- Le panneau **Sessions** (en haut à droite) liste les projets actifs, leurs sous-agents
-  au travail (🤖) et en pause (☕). La caméra se recentre selon le nombre d'îlots.
+- Le **salon** occupe l'avant gauche : canapé, table basse, téléviseur et console. L'écran
+  regarde le canapé, donc il tourne le dos à la caméra — ce qu'on voit, c'est sa lueur sur
+  les joueurs, et elle ne s'allume que si quelqu'un joue.
+- Le mur de gauche porte un **tableau blanc** (le schéma de l'appli, des post-it, un
+  burndown) et le **modèle de données** punaisé à côté. La **baie serveurs** occupe l'angle
+  du fond à droite : trois armoires, dont celle du milieu allume une LED par commande shell
+  encore en cours (`background_tasks` des hooks).
+- Le panneau **Sessions** (en haut à droite) liste les projets actifs et, en pied,
+  l'effectif de la maison. La caméra se recentre selon le nombre d'îlots.
 - Les bureaux ont **deux écrans**, allumés de la même couleur que l'outil en cours.
 - Chaque agent a une **allure propre** — teint, coupe, haut, pantalon, taille, lunettes —
   dérivée de son nom de façon déterministe. Les leads gardent la famille orange.
@@ -37,6 +41,39 @@ claude (CLI) ──hooks──▶ curl POST /event ──▶ server.js ──SSE
 - L'animation et la couleur de l'écran suivent l'outil en cours :
   - vert = Edit/Write (tape au clavier) · ambre = Bash · bleu = Read/Grep/Glob
   - violet = WebSearch/WebFetch/MCP · rose = TodoWrite · rouge clignotant = attend ta permission (main levée)
+
+## La maison et ses employés
+
+Claude Office est l'employeur, pas une agence d'intérim. **Un agent appelé une fois entre
+à l'effectif et n'en sort plus.**
+
+- Au premier appel d'un métier (`subagent_type`), l'employé est **embauché** : il entre par
+  la porte et rejoint l'îlot qui l'appelle.
+- Mission finie, il **rend son bureau et quitte l'îlot, pas la maison**. Il va s'occuper
+  ailleurs et change d'occupation toutes les minute ou deux : ☕ au mange-debout,
+  🎮 sur le canapé devant la console, 🧍 debout à discuter devant le salon.
+- Rappelé — par **n'importe quelle session**, pas seulement celle qui l'avait embauché —
+  il traverse l'open space et s'installe au bureau qui l'attend.
+- On n'embauche un second employé d'un métier que si **tous ceux de ce métier sont déjà sur
+  un dossier**. L'effectif reste donc de la taille de ton usage réel.
+- Les **leads ne font pas partie de l'effectif** : ils *sont* la session, et disparaissent
+  avec elle. Eux seuls ont jamais quitté la pièce — et depuis que la maison garde ses gens,
+  plus personne ne franchit la porte dans ce sens. Elle ne sert plus qu'aux arrivées.
+
+L'effectif est **gardé par le serveur** et réécrit dans `.state.json`, puis rejoué en tête
+du flux à chaque connexion : recharger la page ou redémarrer le serveur ne vide pas l'open
+space. Les employés qui ne sont sur aucun dossier sont reposés directement à une place de
+repos — ils étaient déjà là, les faire entrer par la porte serait un mensonge.
+
+### Envoyer le lead en pause
+
+Tape **`café`** (ou `coffee`, `pause café`, `va boire un café`, `take a break`…) comme
+prompt dans une session : le lead quitte son poste pour le mange-debout. Il garde son
+bureau et y revient dès qu'il y a du travail — un `PreToolUse` ou un vrai prompt suffit.
+
+Le prompt doit se réduire **exactement** à l'une de ces phrases : une demande qui *parle* de
+café (« ajoute un bouton café ») ne l'envoie pas au bar. Claude reçoit quand même le prompt
+et y répondra — la commande ne pilote que la vue.
 
 ## Quand une session t'appelle
 
@@ -53,9 +90,9 @@ attend sans lire les étiquettes, et même sans regarder l'onglet.
 
 ## Inspecter
 
-- Clic sur un **agent** → rôle, état, mission, `agent_id`, outil en cours et depuis quand.
-- Clic sur le **tapis d'un îlot** → session, durée, sous-agents au travail et au café,
-  nombre d'outils appelés, dernier outil, le plus long, tâches de fond, effort, mode de
+- Clic sur un **agent** → rôle, affectation, état, mission, `agent_id`, outil en cours.
+- Clic sur le **tapis d'un îlot** → session, durée, sous-agents sur le dossier, effectif de
+  la maison, outils appelés, dernier outil, le plus long, tâches de fond, effort, mode de
   permissions. La caméra se cadre en même temps sur l'îlot ; `⤢ Tout voir` dézoome.
 - Clic sur une ligne du panneau **Sessions** → même chose.
 - `Échap` ferme le panneau de détail.
@@ -74,11 +111,12 @@ attend sans lire les étiquettes, et même sans regarder l'onglet.
 Les hooks ont un timeout d'1 s et `|| true` : si le serveur est coupé, Claude Code n'est ni bloqué ni ralenti.
 
 Le serveur retient les sessions ouvertes — identité (id + projet) **et sous-agents encore
-en vol** — puis les rejoue à chaque nouvelle page. Recharger affiche aussitôt les îlots et
-les agents déjà au travail, même si personne ne bouge à cet instant. Cet état est écrit
-dans `.state.json` : **redémarrer le serveur ne perd plus les agents déjà lancés**.
-Ce qui n'est pas rejoué : l'outil en cours d'exécution, qui reprend au premier événement
-suivant. `GET /sessions` montre ce que le serveur croit savoir.
+en vol** — ainsi que l'effectif, puis les rejoue à chaque nouvelle page. Recharger affiche
+aussitôt les îlots, les agents déjà au travail et l'open space peuplé, même si personne ne
+bouge à cet instant. Cet état est écrit dans `.state.json` : **redémarrer le serveur ne perd
+ni les agents déjà lancés, ni les employés**. Ce qui n'est pas rejoué : l'outil en cours
+d'exécution, qui reprend au premier événement suivant. `GET /sessions` montre ce que le
+serveur croit savoir.
 
 Un agent lancé pendant que le serveur était arrêté reste invisible : le seul canal
 d'information, ce sont les hooks. Il apparaîtra au prochain agent que la session lancera.
@@ -100,9 +138,15 @@ Depuis une autre machine : `HOST=0.0.0.0 node server.js` puis `index.html?server
 - 6 îlots sont visibles simultanément. Au-delà, les sessions supplémentaires se superposent
   sur les emplacements existants (le comptage reste juste, mais l'affichage se chevauche).
 - Un îlot compte 4 bureaux. Au-delà de 4 agents, les suivants se partagent le dernier bureau.
+- L'open space offre **13 places de repos** (4 au bar, 3 sur le canapé, 6 debout). Un
+  quatorzième employé désœuvré reste planté là où il se trouve. Comme on n'embauche que
+  faute de disponible, il faut 14 métiers simultanément occupés pour y arriver.
+- La mémoire de l'effectif est **par serveur, pas par projet** : un employé embauché depuis
+  un dépôt peut être rappelé depuis un autre. C'est voulu — c'est la même maison.
 
 ## Pistes
 
 - Piloter Claude depuis l'UI via l'Agent SDK (le serveur lance les sessions et lit le stream JSON → attribution exacte des sous-agents).
-- Modèles glTF / sprites low-poly à la place des cubes, bulles de dialogue, sons de clavier.
+- Modèles glTF / sprites low-poly à la place des cubes, sons de clavier.
 - Statistiques façon tycoon : tokens, fichiers modifiés, tests verts, « moral » des agents.
+- Ancienneté visible : un employé embauché il y a longtemps mérite mieux qu'un bureau au fond.

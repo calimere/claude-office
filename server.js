@@ -14,6 +14,10 @@ const clients = new Set();
 // Elle est aussi écrite sur disque : un redémarrage du serveur ne doit pas rendre
 // invisibles des agents lancés une heure plus tôt et toujours au travail.
 const live = new Map();
+// L'effectif de la maison : tous les types d'agents deja appeles au moins une fois.
+// La page en fait des employes permanents. Sans cette memoire, un rechargement
+// viderait l'open space de tous ceux qui ne sont pas sur un dossier a cet instant.
+const staff = new Map(); // type -> { type, since }
 const TTL = 12 * 3600e3; // une session sans signe de vie depuis 12 h est oubliée
 const MAX_TASKS = 12;    // garde-fou si un PostToolUse se perd
 const isTask = (n) => n === 'Task' || n === 'Agent';
@@ -26,7 +30,9 @@ try {
     if (now - s._ts > TTL) continue;
     live.set(s.session_id, { ...s, tasks: new Map(s.tasks ?? []) });
   }
+  for (const a of saved.staff ?? []) staff.set(a.type, a);
   if (live.size) console.log(`  ${live.size} session(s) reprise(s) depuis .state.json`);
+  if (staff.size) console.log(`  ${staff.size} employe(s) repris depuis .state.json`);
 } catch { /* premier démarrage, ou état illisible : on repart à vide */ }
 
 let saveTimer = null;
@@ -34,7 +40,7 @@ function persist() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const sessions = [...live.values()].map((s) => ({ ...s, tasks: [...s.tasks] }));
-    fs.writeFile(STATE, JSON.stringify({ sessions }), () => {});
+    fs.writeFile(STATE, JSON.stringify({ sessions, staff: [...staff.values()] }), () => {});
   }, 800);
   saveTimer.unref?.();
 }
@@ -51,6 +57,9 @@ function remember(ev) {
 
   if (isTask(ev.tool_name) && ev.tool_use_id) {
     if (ev.hook_event_name === 'PreToolUse') {
+      // Premiere apparition de ce metier : il entre a l'effectif, et n'en sort plus.
+      const type = ev.tool_input?.subagent_type || 'agent';
+      if (!staff.has(type)) staff.set(type, { type, since: ev._ts });
       // On ne retient que l'essentiel : le prompt complet n'a rien à faire sur disque.
       s.tasks.set(ev.tool_use_id, {
         session_id: sid, cwd: ev.cwd, hook_event_name: 'PreToolUse',
@@ -109,6 +118,10 @@ http.createServer((req, res) => {
       'Access-Control-Allow-Origin': '*',
     });
     res.write(': hello\n\n');
+    // L'effectif d'abord : la page reconstitue la maison, puis on y pose les dossiers.
+    if (staff.size) res.write(`data: ${JSON.stringify({
+      hook_event_name: 'Staff', staff: [...staff.keys()],
+    })}\n\n`);
     // Rejoue les sessions déjà ouvertes pour que la page se peuple immédiatement,
     // sans attendre qu'un agent bouge. On les présente comme des SessionStart :
     // l'îlot et son nom de projet sont reconstruits, l'activité reprend au vol.
@@ -140,7 +153,7 @@ http.createServer((req, res) => {
       subagents: [...s.tasks.values()].map((e) => e.tool_input?.subagent_type ?? 'agent'),
     }));
     res.writeHead(200, { 'Content-Type': 'application/json' })
-      .end(JSON.stringify({ clients: clients.size, sessions: out }, null, 2));
+      .end(JSON.stringify({ clients: clients.size, staff: [...staff.keys()], sessions: out }, null, 2));
     return;
   }
 
