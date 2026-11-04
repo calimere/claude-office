@@ -424,10 +424,11 @@ function window3d(x, z) {
 }
 window3d(2.5, -ROOM.d / 2 + .06);
 window3d(9.5, -ROOM.d / 2 + .06);
-// Premier rendu du ciel, puis tout passe par la boucle : applyDaylight etait appele
-// toutes les 60 s, ce qui faisait avancer la lumiere par marches.
+// Premier rendu du ciel seulement. applyDaylight n'est PAS appele ici : il pilote
+// desormais les suspensions, donc il lit `pods`, qui n'est declare que bien plus bas.
+// L'appeler maintenant leverait une ReferenceError de zone morte et tuerait tout le
+// module. La boucle s'en charge des la premiere image (dayLast part a -9).
 drawSky(nowHours(0), 0);
-applyDaylight(nowHours(0));
 
 // Enseigne murale. Lettrage dessiné par défaut ; si un logo.png est posé à côté
 // d'index.html, il le remplace (le serveur sert les images du dossier).

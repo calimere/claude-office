@@ -235,6 +235,16 @@ d'information, ce sont les hooks. Il apparaîtra au prochain agent que la sessio
 Ouvrir `index.html` directement (ou `?demo`) lance un scénario de démo sans serveur.
 Depuis une autre machine : `HOST=0.0.0.0 node server.js` puis `index.html?server=http://ip:4317`.
 
+## Vérifier
+
+`node smoke.mjs` évalue le module entier d'`index.html` avec un three.js factice et
+fait tourner huit images de la boucle. `node --check` ne voit que la syntaxe : un appel
+au chargement qui touche une constante déclarée plus bas lève une *ReferenceError* de
+zone morte, tue tout le script et laisse une page noire — sans la moindre erreur de
+syntaxe. C'est arrivé une fois ; ce test est là pour que ça ne recommence pas.
+
+`node smoke.mjs "?hour=21&fx=0"` passe des paramètres d'URL.
+
 ## Limites connues
 
 - **Les agents sont asynchrones.** Le `PostToolUse` de l'outil `Agent` arrive au
