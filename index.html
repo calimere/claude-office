@@ -328,51 +328,68 @@ function claimSpot() { const s = COFFEE_SPOTS.find((k) => !k.busy); if (s) s.bus
 
 /* ---------- Salon : canape, televiseur, console ---------- */
 // Une maison qui garde ses gens doit leur donner autre chose qu'un bureau. Le salon
-// occupe la bande libre a l'avant gauche, entre la porte et les ilots de devant.
-// Canape tourne vers +x : les employes assis font face a la camera, pas le dos.
-const LOUNGE_X = -11.4, LOUNGE_Z = 9.4, TV_X = -6.8;
+// occupe le centre de la bande libre a l'avant, dans l'axe de la piece.
+//
+// L'ecran regarde le fond : il tourne donc le dos a la camera, et les employes assis
+// devant lui nous font face. On ne voit jamais l'image — on voit sa lueur sur les
+// visages. Un televiseur et un canape se faisant face, l'un des deux est forcement
+// de dos en vue isometrique : ce sont les gens qu'on garde.
+const LOUNGE_X = 0, LOUNGE_Z = 8.45, TV_Z = 10.6;
 
-const couchSeat = box(1.5, .42, 3.6, 0x55707e); couchSeat.position.set(LOUNGE_X, .21, LOUNGE_Z); scene.add(couchSeat);
-const couchBack = box(.36, .74, 3.6, 0x4a6370); couchBack.position.set(LOUNGE_X - .57, .62, LOUNGE_Z); scene.add(couchBack);
-for (const dz of [-1.8, 1.8]) {
-  const arm = box(1.5, .6, .3, 0x4a6370); arm.position.set(LOUNGE_X, .51, LOUNGE_Z + dz); scene.add(arm);
+// Tapis : delimite le coin salon dans une bande sans cloison ni mur.
+const loungeRug = box(5.8, .03, 3.2, 0x6b4a52, { roughness: 1 });
+loungeRug.position.set(LOUNGE_X, .015, 9.3); // 9.3 ± 1.6 : tient dans la piece (z ≤ 11)
+loungeRug.castShadow = false; loungeRug.receiveShadow = true; scene.add(loungeRug);
+
+// Canape tourne vers +z : dossier cote fond, on s'y assoit face au televiseur.
+const couchSeat = box(3.6, .42, 1.4, 0x55707e); couchSeat.position.set(LOUNGE_X, .21, LOUNGE_Z); scene.add(couchSeat);
+const couchBack = box(3.6, .74, .34, 0x4a6370); couchBack.position.set(LOUNGE_X, .62, LOUNGE_Z - .53); scene.add(couchBack);
+for (const dx of [-1.8, 1.8]) {
+  const arm = box(.3, .6, 1.4, 0x4a6370); arm.position.set(LOUNGE_X + dx, .51, LOUNGE_Z); scene.add(arm);
 }
-for (const dz of [-1.15, 0, 1.15]) { // coussins, un par place
-  const cush = box(1.32, .16, 1.04, 0x62808f);
-  cush.position.set(LOUNGE_X + .04, .5, LOUNGE_Z + dz); scene.add(cush);
+for (const dx of [-1.15, 0, 1.15]) { // coussins, un par place
+  const cush = box(1.04, .16, 1.24, 0x62808f);
+  cush.position.set(LOUNGE_X + dx, .5, LOUNGE_Z + .04); scene.add(cush);
 }
-// Table basse, magazines et une tasse oubliee.
-const lowTable = box(.86, .1, 1.6, 0x8a6442); lowTable.position.set(LOUNGE_X + 1.6, .42, LOUNGE_Z); scene.add(lowTable);
-for (const [dz, col] of [[-.34, 0xd2a35c], [.28, 0xb5553f]]) {
-  const mag = box(.52, .03, .38, col); mag.position.set(LOUNGE_X + 1.6, .49, LOUNGE_Z + dz); scene.add(mag);
+// Table basse et magazines, entre le canape et le televiseur.
+// Reculee a 9.85 : elle degage la voie z = 9.35 devant le canape, par laquelle on
+// gagne sa place. Sans ce passage, on s'asseyait en traversant l'accoudoir.
+const lowTable = box(1.7, .1, .7, 0x8a6442); lowTable.position.set(LOUNGE_X, .42, 9.85); scene.add(lowTable);
+for (const [dx, col] of [[-.36, 0xd2a35c], [.3, 0xb5553f]]) {
+  const mag = box(.42, .03, .44, col); mag.position.set(LOUNGE_X + dx, .49, 9.85); scene.add(mag);
 }
-for (const dz of [-1.0, 1.0]) {
-  const leg = box(.08, .32, .08, 0x6b4e35); leg.position.set(LOUNGE_X + 1.6, .21, LOUNGE_Z + dz); scene.add(leg);
+for (const dx of [-1.05, 1.05]) {
+  const leg = box(.08, .32, .08, 0x6b4e35); leg.position.set(LOUNGE_X + dx, .21, 9.85); scene.add(leg);
 }
 
-// Televiseur et console. L'ecran regarde le canape, donc il tourne le dos a la
-// camera : ce qu'on voit, c'est sa lueur sur les joueurs. C'est elle qui raconte
-// la scene, et elle eclaire les visages — un ecran de face les laisserait dans le noir.
-const tvStand = box(.52, .5, 1.9, 0x3a322c); tvStand.position.set(TV_X, .25, LOUNGE_Z); scene.add(tvStand);
-const tvBody = box(.14, 1.02, 1.82, 0x15171c); tvBody.position.set(TV_X, 1.14, LOUNGE_Z); scene.add(tvBody);
-const console3d = box(.34, .1, .9, 0x24282e); console3d.position.set(TV_X, .56, LOUNGE_Z); scene.add(console3d);
+// Televiseur et console, de dos. Le corps est une simple dalle sombre : il n'y a pas
+// d'ecran a dessiner, on ne le verra jamais.
+const tvStand = box(2.0, .5, .52, 0x3a322c); tvStand.position.set(LOUNGE_X, .25, TV_Z); scene.add(tvStand);
+const tvBody = box(1.92, 1.02, .14, 0x15171c); tvBody.position.set(LOUNGE_X, 1.14, TV_Z); scene.add(tvBody);
+const tvFoot = box(.52, .12, .3, 0x24282e); tvFoot.position.set(LOUNGE_X, .57, TV_Z); scene.add(tvFoot);
+const console3d = box(.86, .1, .34, 0x24282e); console3d.position.set(LOUNGE_X + .74, .56, TV_Z - .04); scene.add(console3d);
 const consoleLed = box(.05, .05, .05, 0x5fa3ff, { emissive: 0x5fa3ff });
-consoleLed.position.set(TV_X - .18, .56, LOUNGE_Z + .36); scene.add(consoleLed);
+consoleLed.position.set(LOUNGE_X + .38, .56, TV_Z - .2); scene.add(consoleLed);
+// La lueur se pose DEVANT l'ecran, cote canape : c'est elle qui eclaire les joueurs.
 const tvLight = new THREE.PointLight(0x6fa3d6, 0, 8, 2);
-tvLight.position.set(TV_X - .6, 1.2, LOUNGE_Z); scene.add(tvLight);
+tvLight.position.set(LOUNGE_X, 1.2, TV_Z - .75); scene.add(tvLight);
 
-// Places du canape : assises, tournees vers le televiseur.
-const COUCH_SPOTS = [-1.15, 0, 1.15].map((dz) => ({
-  pos: new V3(LOUNGE_X + .25, 0, LOUNGE_Z + dz), kind: 'couch', busy: false,
-  face: Math.atan2(-(TV_X - (LOUNGE_X + .25)), dz),
+// Voie d'acces au canape : entre le bord de l'assise (9.15) et la table (9.50).
+const COUCH_LANE_Z = 9.35;
+
+// Places du canape : assises, tournees vers le televiseur, donc vers la camera.
+const COUCH_SPOTS = [-1.15, 0, 1.15].map((dx) => ({
+  pos: new V3(LOUNGE_X + dx, 0, LOUNGE_Z + .1), kind: 'couch', busy: false,
+  face: Math.atan2(dx, -(TV_Z - LOUNGE_Z - .1)),
 }));
 
-// Places debout devant le salon : le troisieme lieu de repos. Sans lui, un employe
-// de plus que de places assises resterait plante a l'origine de la scene — au milieu
-// de la piece. Elles servent aussi de debarras quand la maison se remplit.
-const STAND_SPOTS = [-4.4, -3.0, -1.6, -.2, 1.2, 2.6].map((x) => ({
-  pos: new V3(x, 0, LOUNGE_Z + .4), kind: 'stand', busy: false,
-  face: Math.atan2(-(LOUNGE_X - x), .4), // tourne vers le canape, comme on discute
+// Places debout : le troisieme lieu de repos. Sans lui, un employe de plus que de
+// places assises resterait plante a l'origine de la scene — au milieu de la piece.
+// Elles occupent la bande avant gauche, liberee par le salon qui est passe au centre.
+// Le creux au milieu de la rangee evite la plante posee en (-7.4, 10.6).
+const STAND_SPOTS = [-12.2, -10.8, -9.4, -8.0, -5.6, -4.2].map((x) => ({
+  pos: new V3(x, 0, 9.3), kind: 'stand', busy: false,
+  face: Math.atan2(x - LOUNGE_X, 9.3 - LOUNGE_Z), // tourne vers le salon, comme on discute
 }));
 
 // Une place libre pour un employe desoeuvre. On evite de lui rendre l'occupation
@@ -983,6 +1000,12 @@ class Agent {
     // Le salon et ses abords se gagnent par le couloir de gauche, le bar par la
     // voie de droite. Ce sont les deux seules facons de descendre sans traverser.
     const lane = spot.kind === 'coffee' ? CAFE_LANE_X : CORRIDOR_X;
+    // Le canape s'aborde par la bande degagee devant lui, puis on s'assoit en
+    // reculant : rejoindre la place en longeant l'assise traverserait l'accoudoir.
+    if (spot.kind === 'couch') {
+      return [...this.fromHere(), new V3(lane, 0, AISLE_Z), new V3(lane, 0, COUCH_LANE_Z),
+        new V3(spot.pos.x, 0, COUCH_LANE_Z), spot.pos.clone()];
+    }
     return [...this.fromHere(), new V3(lane, 0, AISLE_Z),
       new V3(lane, 0, spot.pos.z), spot.pos.clone()];
   }

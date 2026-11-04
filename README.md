@@ -22,9 +22,12 @@ claude (CLI) ──hooks──▶ curl POST /event ──▶ server.js ──SSE
 - Le **coin café** (bar + mange-debout) occupe la bande libre à l'avant droit, devant
   les îlots. On y accède par l'allée centrale puis une voie dédiée (`CAFE_LANE_X`)
   qui passe entre le comptoir et les places debout.
-- Le **salon** occupe l'avant gauche : canapé, table basse, téléviseur et console. L'écran
-  regarde le canapé, donc il tourne le dos à la caméra — ce qu'on voit, c'est sa lueur sur
-  les joueurs, et elle ne s'allume que si quelqu'un joue.
+- Le **salon** occupe le centre de la bande avant, dans l'axe de la pièce : tapis, canapé,
+  table basse, téléviseur et console. L'écran regarde le fond, donc il tourne le dos à la
+  caméra — ce qu'on voit, c'est sa lueur sur les joueurs, et elle ne s'allume que si
+  quelqu'un joue. Un téléviseur et un canapé se faisant face, l'un des deux est forcément
+  de dos en vue isométrique : ce sont les gens qu'on garde.
+- Les **places debout** où l'on discute occupent la bande avant gauche, libérée par le salon.
 - Le mur de gauche porte un **tableau blanc** (le schéma de l'appli, des post-it, un
   burndown) et le **modèle de données** punaisé à côté. La **baie serveurs** occupe l'angle
   du fond à droite : trois armoires, dont celle du milieu allume une LED par commande shell
