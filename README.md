@@ -104,14 +104,36 @@ attend sans lire les étiquettes, et même sans regarder l'onglet.
 ## Installation
 
 1. `node server.js` (Node 18+, aucune dépendance) → ouvre http://localhost:4317
-2. Copie le bloc `hooks` dans `~/.claude/settings.json` (global) ou `.claude/settings.json` (projet). Fusionne avec tes hooks existants si tu en as.
-   - **macOS / Linux** : `hooks.json`.
-   - **Windows** : `hooks.windows.json`, qui appelle le wrapper `claude-office-hook.cmd`
-     (la syntaxe bash de `hooks.json` — `/dev/null`, `|| true`, quotes simples — ne passe
-     pas sous `cmd.exe`). Adapte le chemin absolu si tu déplaces le dossier.
+2. Copie le bloc `hooks` de `hooks.json` dans `~/.claude/settings.json` (global) ou
+   `.claude/settings.json` (projet). Fusionne avec tes hooks existants si tu en as.
+   **Le même fichier vaut pour macOS, Linux et Windows**, et il n'y a aucun chemin à
+   adapter : tu copies, tu colles, où que soit le dossier.
 3. Lance `claude` normalement. Le bureau s'anime.
 
-Les hooks ont un timeout d'1 s et `|| true` : si le serveur est coupé, Claude Code n'est ni bloqué ni ralenti.
+### Pourquoi la commande est écrite comme ça
+
+```
+curl -s -m 1 -X POST http://127.0.0.1:4317/event -H Content-Type:application/json --data-binary @- || exit 0
+```
+
+Chaque morceau sert à la rendre portable, parce qu'on ne sait pas quel shell va
+l'exécuter — Claude Code passe les hooks par `sh` sur certaines installations Windows,
+par `cmd.exe` sur d'autres :
+
+- **`-H Content-Type:application/json`, sans espace.** Un en-tête HTTP n'exige pas
+  d'espace après le deux-points. Sans espace, plus besoin de quotes — et donc plus de
+  différence de *quoting* entre `sh` et `cmd.exe`. La commande ne contient pas un seul
+  guillemet.
+- **`|| exit 0`.** `exit 0` existe dans les deux shells. `|| true` ne marche pas sous
+  `cmd.exe` (`true` n'y est pas une commande) et `|| ver >nul` ne marche pas sous `sh`.
+- **Aucune redirection.** `-s` rend `curl` muet, et le serveur répond `204` sans corps :
+  rien n'arrive sur la sortie standard, il n'y a donc rien à rediriger. C'est ce qui
+  permet d'éviter `>/dev/null`, que `cmd.exe` ne comprend pas, **et** `>nul`, qui sous
+  `sh` ne redirige rien du tout : il crée un fichier nommé `nul` dans ton projet.
+
+Résultat, dans les quatre cas (`sh` ou `cmd.exe`, serveur allumé ou coupé) : sortie `0`,
+aucun affichage, aucun fichier parasite. Avec le timeout d'1 s, Claude Code n'est jamais
+ni bloqué ni ralenti par un serveur éteint.
 
 Le serveur retient les sessions ouvertes — identité (id + projet) **et sous-agents encore
 en vol** — ainsi que l'effectif, puis les rejoue à chaque nouvelle page. Recharger affiche
