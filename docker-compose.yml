@@ -1,0 +1,29 @@
+# Claude Office — deploiement LAN.
+#
+#   OFFICE_TOKEN=$(openssl rand -hex 16) docker compose up -d
+#
+# La page est libre sur le LAN. Pour une adresse publique, voir le lot 4 :
+# reverse proxy TLS devant, VIEW_PASSWORD rempli, et le port 4317 non publie.
+services:
+  office:
+    build: .
+    image: claude-office
+    restart: unless-stopped
+    ports:
+      - "4317:4317"
+    environment:
+      # Jeton que les agents presentent pour publier. OBLIGATOIRE ici : sans lui le
+      # serveur en tire un au hasard a chaque demarrage, et les postes decrochent.
+      OFFICE_TOKEN: ${OFFICE_TOKEN:?definissez OFFICE_TOKEN, par exemple avec "openssl rand -hex 16"}
+      # Ville de la meteo (seul appel sortant du serveur).
+      CITY: ${CITY:-Paris}
+      # Mot de passe de la page. Vide sur un LAN ; a remplir des que le serveur sort.
+      VIEW_USER: ${VIEW_USER:-office}
+      VIEW_PASSWORD: ${VIEW_PASSWORD:-}
+    volumes:
+      # Le roster, et rien d'autre : la liste des metiers d'agents deja vus. Aucune
+      # activite, aucun projet, aucun nom de poste n'est ecrit sur disque.
+      - roster:/data
+
+volumes:
+  roster:
