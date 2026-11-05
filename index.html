@@ -1604,10 +1604,21 @@ function framePods() {
     z0 = Math.min(z0, s.z); z1 = Math.max(z1, s.z);
   }
   // En vue isometrique, x et z poussent tous les deux l'image vers le haut : c'est
-  // leur SOMME qui decide de la hauteur a l'ecran, pas le plus grand des deux. On
-  // ajoute la taille d'un ilot (6,1 × 6,3) a l'etendue des CENTRES, puis on cale la
-  // droite sur les deux cas connus : un ilot seul tenait a 8,5, six a 21.
-  camSpan = Math.max(8.5, .52 * ((x1 - x0 + 6.1) + (z1 - z0 + 6.3)) + 2.05);
+  // leur SOMME qui decide de la hauteur a l'ecran, pas le plus grand des deux. Cette
+  // somme, divisee par racine(6), donne exactement la hauteur occupee a l'ecran.
+  //
+  // La marge est ADDITIVE, et c'est tout l'objet du reglage : une marge
+  // proportionnelle (l'ancienne valait 2,7 fois le strict necessaire) donne un
+  // cadrage correct sur un ilot et deux tiers d'ecran vides sur vingt, puisqu'elle
+  // grandit avec ce qu'elle entoure. Ce qu'on veut, c'est une quantite FIXE de
+  // contexte autour des ilots occupes, quel que soit leur nombre.
+  //
+  // CONTEXTE couvre la hauteur des suspensions (4,5, soit 3,7 a l'ecran) et de quoi
+  // respirer autour. Le facteur 1,08 laisse le reste du jeu.
+  const CONTEXTE = 5.8;
+  const etendue = (x1 - x0 + 6.1) + (z1 - z0 + 6.3);
+  // camSpan est la DEMI-hauteur du cadre, d'ou le 2 au denominateur.
+  camSpan = Math.max(8.5, etendue / (2 * Math.sqrt(6)) * 1.08 + CONTEXTE);
   // Plus le cadre est large, plus il doit regarder le centre de la PIECE plutot que
   // celui des ilots. Sans ce glissement, trois sessions dans une piece de vingt
   // places font cadrer un coin : le parquet sort du champ et l'ecran est a moitie

@@ -30,6 +30,28 @@ const check = (n, c, extra) => {
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Attendre un ETAT plutot qu une duree. Les attentes fixes passent sur une machine
+// au repos et echouent des que le processeur est pris ailleurs — un test qui depend
+// de la charge ne vaut guere mieux qu un test absent.
+async function attendre(nom, pret, limite = 15000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < limite) {
+    try { if (await pret()) return true; } catch { /* pas encore la */ }
+    await wait(120);
+  }
+  check('attente de « ' + nom + ' » (' + limite + ' ms)', false);
+  return false;
+}
+
+const getJSON = (port, path) => new Promise((done, fail) => {
+  const r = http.get({ host: '127.0.0.1', port, path, timeout: 2000 }, (res) => {
+    let b = ''; res.on('data', (c) => b += c);
+    res.on('end', () => { try { done(JSON.parse(b)); } catch (e) { fail(e); } });
+  });
+  r.on('error', fail);
+  r.on('timeout', () => { r.destroy(); fail(new Error('timeout')); });
+});
+
 const SRV_PORT = 4398, AGENT_PORT = 4396, TOKEN = 'jeton-bout-en-bout';
 const ROSTER = path.join(os.tmpdir(), 'roster-smoke-agent.json');
 try { fs.unlinkSync(ROSTER); } catch { /* pas encore la */ }
@@ -43,7 +65,7 @@ const srv = spawn(process.execPath, ['server.js'], {
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 srv.stderr.on('data', (d) => process.stdout.write('   [serveur] ' + d));
-await wait(900);
+await attendre("demarrage du serveur", async () => (await getJSON(SRV_PORT, "/health")).ok);
 
 // -config sur un chemin inexistant : le test ne doit pas dependre de la configuration
 // reelle du poste qui l execute.
@@ -75,7 +97,9 @@ await new Promise((done) => {
   }).on('error', done);
 });
 
-await wait(1500); // le temps que l agent se connecte
+// On attend que la liaison soit EFFECTIVE, pas qu un delai se soit ecoule.
+await attendre("connexion de l agent a la flotte",
+  async () => (await getJSON(AGENT_PORT, "/status")).flotte.en_ligne === true);
 const got = (p) => seen.filter(p);
 
 const post = (body) => new Promise((done) => {
@@ -114,7 +138,9 @@ await post({ hook_event_name: 'PreToolUse', session_id: 'eeee1111-aaaa-bbbb',
 await post({ hook_event_name: 'PreToolUse', session_id: 'eeee1111-aaaa-bbbb',
   tool_name: 'Agent', tool_input: { subagent_type: 'Explore', description: 'tache secrete' },
   tool_use_id: 'b3' });
-await wait(600);
+// On attend que le DERNIER evenement poste ait fait tout le trajet — agent, socket,
+// serveur, flux — plutot qu un delai au juge.
+await attendre('la delegation arrive cote page', () => got((e) => e.act === 'task').length > 0);
 
 const blob = JSON.stringify(seen);
 for (const s of SECRETS) check('« ' + s.slice(0, 26) + ' » n atteint pas la page', !blob.includes(s));
@@ -133,7 +159,8 @@ check('la delegation garde le metier, pas la description',
 
 // La pause cafe : calculee sur le poste, transmise en booleen.
 await post({ hook_event_name: 'UserPromptSubmit', session_id: 'eeee1111-aaaa-bbbb', prompt: 'va boire un café' });
-await wait(400);
+await attendre('la pause cafe arrive cote page',
+  () => got((e) => e.hook_event_name === 'UserPromptSubmit').pop()?.prompt === 'pause');
 check('la pause cafe survit au trajet',
   got((e) => e.hook_event_name === 'UserPromptSubmit').pop()?.prompt === 'pause');
 
@@ -163,7 +190,9 @@ await wait(800);
 check('rien ne bouge au tout premier instant de la coupure',
   seen.slice(beforeKill).length === 0,
   seen.slice(beforeKill).map((e) => e.hook_event_name));
-await wait(1600); // au-dela du delai de grace du test
+// La pause doit finir par etre annoncee : detection de la socket morte, puis grace.
+await attendre('la coupure finit par etre annoncee',
+  () => seen.slice(beforeKill).some((e) => e.hook_event_name === 'MachineOffline'));
 // Un poste tue n est pas un poste parti : ses gens passent en pause, et l ilot
 // reste debout jusqu a ABSENT_TTL. C est MachineOffline qui le dit.
 const apresCoupure = seen.slice(beforeKill);
