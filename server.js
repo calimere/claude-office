@@ -39,6 +39,11 @@ const MACHINE_TIMEOUT = 45e3;  // sans signe de vie : le poste est considere par
 const OFFLINE_GRACE = Number(process.env.OFFLINE_GRACE) || 20e3;
 // Periode du ping qui revele les sockets mortes. Reglable pour les memes raisons.
 const SWEEP_EVERY = Number(process.env.SWEEP_EVERY) || 15e3;
+// Combien de temps on garde les ilots d'un poste qui ne repond plus. Pendant ce
+// delai ses gens sont en pause ; apres, on admet qu'il ne reviendra pas. Une heure
+// couvre un dejeuner et une reunion sans laisser trainer les machines eteintes
+// pour la nuit.
+const ABSENT_TTL = Number(process.env.ABSENT_TTL) || 3600e3;
 // Deplacable : dans un conteneur, c'est le seul fichier a monter sur un volume.
 const ROSTER_FILE = process.env.ROSTER_FILE || path.join(__dirname, '.roster.json');
 
@@ -224,9 +229,28 @@ function applySnapshot(m, snap) {
   }
 }
 
-// Depart d'un poste : ses ilots n'ont plus personne pour les animer, on les demonte.
+// Un poste qui se tait n'est PAS un poste parti. Veille, wifi coupe, fenetre
+// fermee : dans tous ces cas la session Claude existe toujours quelque part, elle
+// ne nous parle simplement plus. On met donc ses gens en pause, et on garde l'ilot.
+// Ce n'est qu'au bout d'ABSENT_TTL qu'on admet que le poste ne reviendra pas.
+function markAbsent(m, why) {
+  if (m.absent) return;
+  m.absent = true;
+  broadcast({ hook_event_name: 'MachineOffline', machine: m.name, fleet: true, _ts: Date.now() });
+  console.log(`  ~ ${m.name} ne repond plus (${why}) — ses agents passent en pause`);
+}
+
+function markPresent(m) {
+  if (!m.absent) return;
+  m.absent = false;
+  broadcast({ hook_event_name: 'MachineOnline', machine: m.name, fleet: true, _ts: Date.now() });
+  console.log(`  → ${m.name} est de retour`);
+}
+
+// Depart pour de bon : ses ilots n'ont plus personne pour les animer, on les demonte.
 function dropMachine(m, why) {
   clearTimeout(m.graceTimer); m.graceTimer = null;
+  clearTimeout(m.absentTimer); m.absentTimer = null;
   for (const key of m.sessions.keys()) {
     broadcast(expand({ machine: m.name, session: key, event: 'SessionEnd', ts: Date.now() }));
   }
@@ -240,13 +264,17 @@ function dropMachine(m, why) {
 // et declenche la fermeture. C'est la seule facon de s'en apercevoir autrement
 // qu'au bout des longues minutes du TCP.
 //
-// Compter : jusqu'a SWEEP_EVERY pour s'en apercevoir, puis OFFLINE_GRACE avant de
-// demonter. Une machine qui plante disparait donc du bureau en 35 s au pire.
+// Compter : jusqu'a SWEEP_EVERY pour s'en apercevoir, puis OFFLINE_GRACE avant que
+// ses gens passent en pause. Une machine qui plante se fige donc en 35 s au pire,
+// et son emplacement n'est rendu qu'apres ABSENT_TTL.
 setInterval(() => {
   const now = Date.now();
   for (const m of [...machines.values()]) {
     if (m.sock && m.sock.open) { m.sock.ping(); continue; }
-    if (!m.graceTimer && now - m.lastSeen > MACHINE_TIMEOUT) dropMachine(m, 'silence');
+    // Une minuterie court deja pour ce poste : elle sait quoi faire et quand. Ce
+    // filet ne sert qu'aux machines arrivees la sans passer par onClose.
+    if (m.graceTimer || m.absentTimer) continue;
+    if (now - m.lastSeen > MACHINE_TIMEOUT) markAbsent(m, 'silence');
   }
 }, SWEEP_EVERY).unref?.();
 
@@ -427,9 +455,11 @@ function onAgent(sock, ctx) {
     stale.close(1000, 'remplace');
   }
   const m = machineOf(ctx.name);
-  // Reconnexion dans le delai de grace : on annule le demontage, et l'instantane
-  // qui suit remet l'etat d'aplomb. Le spectateur n'aura rien vu.
+  // Retour du poste : on annule les deux minuteries, et on rappelle ses gens du
+  // cafe si on les y avait envoyes. L'instantane qui suit remet l'etat d'aplomb.
   clearTimeout(m.graceTimer); m.graceTimer = null;
+  clearTimeout(m.absentTimer); m.absentTimer = null;
+  markPresent(m);
   m.sock = sock;
   console.log(`  → ${ctx.name} se connecte`);
 
@@ -453,20 +483,33 @@ function onAgent(sock, ctx) {
     if (msg.type === 'hello') { sock.send(JSON.stringify({ type: 'welcome', v: PROTOCOL_VERSION })); return; }
   };
 
-  // Fermeture PROPRE (l'agent s'arrete) : le poste est parti, on demonte tout de
-  // suite. Coupure BRUTALE (wifi, veille, cable) : on attend. Sans ce delai, un
-  // hoquet de reseau de deux secondes ferait disparaitre puis reapparaitre tout le
-  // plateau — une convulsion pour une broutille, alors que la reconnexion remet
-  // l'etat en place toute seule par son instantane.
+  // Le poste se tait : ses gens passent en pause, l'ilot reste. Deux minuteries.
+  //
+  // La premiere decide QUAND l'annoncer. Une fermeture propre est deliberee, on le
+  // dit tout de suite ; une coupure brutale attend OFFLINE_GRACE, sinon un hoquet
+  // de reseau de deux secondes enverrait tout le monde au cafe pour en revenir
+  // aussitot — une convulsion pour une broutille.
+  //
+  // La seconde decide QUAND renoncer. Au bout d'ABSENT_TTL sans retour, le poste
+  // est considere parti et son emplacement est rendu.
   sock.onClose = (code) => {
     if (m.sock !== sock) return;
     m.sock = null;
-    if (code === 1000) return dropMachine(m, 'deconnexion');
-    console.log(`  ~ ${m.name} a decroche, on attend ${OFFLINE_GRACE / 1000} s`);
+    const propre = code === 1000;
+    const quand = propre ? 0 : OFFLINE_GRACE;
+    if (!propre) console.log(`  ~ ${m.name} a decroche, on attend ${OFFLINE_GRACE / 1000} s`);
+
+    clearTimeout(m.graceTimer);
     m.graceTimer = setTimeout(() => {
-      if (machines.get(m.name) === m && !m.sock) dropMachine(m, 'coupure');
-    }, OFFLINE_GRACE);
+      if (machines.get(m.name) === m && !m.sock) markAbsent(m, propre ? 'arret' : 'coupure');
+    }, quand);
     m.graceTimer.unref?.();
+
+    clearTimeout(m.absentTimer);
+    m.absentTimer = setTimeout(() => {
+      if (machines.get(m.name) === m && !m.sock) dropMachine(m, 'absent trop longtemps');
+    }, ABSENT_TTL);
+    m.absentTimer.unref?.();
   };
 }
 
@@ -573,7 +616,8 @@ const server = http.createServer((req, res) => {
   // Diagnostic : ce que le serveur croit savoir, a l'instant.
   if (req.url === '/sessions') {
     const out = [...machines.values()].map((m) => ({
-      machine: m.name, online: !!(m.sock && m.sock.open), lastSeen: m.lastSeen,
+      machine: m.name, online: !!(m.sock && m.sock.open), absent: !!m.absent,
+      lastSeen: m.lastSeen,
       sessions: [...m.sessions.values()].map((s) => ({
         session: s.session, project: s.project,
         subagents: [...s.tasks.values()].map((t) => t.agent),

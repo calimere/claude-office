@@ -323,18 +323,53 @@ en cherchant chacun d'eux dans ce qui sort.
 
 ### Quand un poste décroche
 
-Deux cas, traités différemment, parce qu'ils ne veulent pas dire la même chose :
+**Un poste qui se tait n'est pas un poste parti.** Veille, wifi coupé, fenêtre fermée :
+dans tous ces cas la session Claude existe toujours quelque part, elle ne nous parle
+simplement plus. Ses gens passent donc **en pause**, et l'îlot reste.
 
-- **Fermeture propre** (l'agent s'arrête) : le poste est parti, ses îlots se démontent
-  tout de suite.
-- **Coupure brutale** (wifi, veille, câble) : on attend `OFFLINE_GRACE` (20 s). Si le
-  poste revient avant, rien ne bouge à l'écran — son instantané remet l'état d'aplomb.
-  Sans ce délai, un hoquet de réseau de deux secondes ferait disparaître puis
-  réapparaître tout le plateau : une convulsion pour une broutille.
+```
+socket morte ──ping (15 s)──▶ détectée ──grâce (20 s)──▶ pause ──1 h sans retour──▶ démontage
+```
 
 Côté serveur, une socket morte a l'air parfaitement ouverte : rien ne la révèle sauf une
-écriture. D'où un ping toutes les `SWEEP_EVERY` (15 s), qui échoue et déclenche la
-fermeture. Au pire, une machine qui plante disparaît du bureau en 35 s.
+écriture. D'où le ping périodique, qui échoue et déclenche la fermeture.
+
+- Un **arrêt propre** de l'agent saute le délai de grâce : la décision est délibérée, on
+  la prend au mot.
+- Une **coupure brutale** attend `OFFLINE_GRACE`. Sans ça, un hoquet de réseau de deux
+  secondes enverrait tout le plateau au café pour l'en faire revenir aussitôt.
+- Le retour du poste **lève la pause** : chacun retrouve exactement le bureau qu'il avait,
+  parce qu'une pause subie ne fait rendre ni le bureau ni le dossier. Sans ça, le retour
+  devrait reconstruire des affectations que plus personne ne réannonce — le serveur
+  n'émet que ce qui a changé.
+- Au bout d'`ABSENT_TTL` (1 h), on admet que le poste ne reviendra pas et on rend son
+  emplacement.
+
+L'îlot d'un poste injoignable est **tamisé**, pour qu'on le distingue d'une vraie pause café.
+
+### Le bloc de 5 h épuisé
+
+Quand le bloc arrive à son terme, les gens **du poste concerné** vont en pause. En flotte
+chaque poste a son propre bloc, ouvert à une heure différente : `/usage` renvoie le détail
+par machine, et c'est lui qu'on lit. Se fier à l'agrégat enverrait tout le plateau au café
+parce qu'une seule machine a fini le sien.
+
+La jauge mesure le **temps écoulé** du bloc par défaut. Avec `?budget=4000000` elle bascule
+sur le volume consommé — et la pause suit ce qui est affiché, pour qu'il n'y ait jamais
+deux vérités à l'écran.
+
+### Dix-huit heures
+
+Une session qui attend une réponse ne l'aura pas ce soir : ses gens **rentrent chez eux**,
+par la porte. L'îlot reste — la session existe toujours, elle attend toujours — mais il
+**s'éteint**. Un bureau vide le dit mieux qu'un îlot démonté, qui prétendrait que la
+session est finie.
+
+Une session qui travaille la nuit, elle, reste à son poste : c'est l'attente sans réponse
+qui fait partir, pas l'heure seule. Dès qu'on répond, ou au matin, tout le monde revient.
+
+`?depart=20` décale l'heure. Avec `?clock=60`, qui fait défiler la journée en une minute,
+c'est la seule façon de voir le départ sans attendre le soir.
 
 ### Réconciliation
 
@@ -420,7 +455,8 @@ OFFICE_TOKEN=$(openssl rand -hex 16) docker compose up -d
 | `CITY` | `Paris` | ville de la météo — seul appel sortant du serveur |
 | `ROSTER_FILE` | `.roster.json` | le seul fichier écrit |
 | `ALLOW_REMOTE_EVENT` | `0` | ouvre `/event` au réseau. **À laisser à `0`** : cet endpoint accepte des hooks bruts |
-| `OFFLINE_GRACE` | `20000` | délai avant de démonter les îlots d'un poste coupé brutalement |
+| `OFFLINE_GRACE` | `20000` | délai avant d'annoncer qu'un poste coupé brutalement ne répond plus |
+| `ABSENT_TTL` | `3600000` | au bout de combien de temps un poste absent perd ses îlots |
 | `SWEEP_EVERY` | `15000` | période du ping qui révèle les sockets mortes |
 
 Le jeton n'est jamais vide : sans valeur fournie, le serveur en tire un au hasard et

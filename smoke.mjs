@@ -167,7 +167,8 @@ src = src.replace(/^\s*import .*?;\s*$/gm, '');
 // ajoute un epilogue qui expose les constantes de plan dont le test a besoin —
 // plutot que de recopier des coordonnees dans le test, ou elles divergeraient.
 src += '\n;globalThis.__plan = { ROOM, POD_X, POD_Z, AISLES, aisleFor, NAV,'
-  + ' COFFEE, RACK_Z, STAND_SPOTS, COFFEE_SPOTS, DOOR };';
+  + ' COFFEE, RACK_Z, STAND_SPOTS, COFFEE_SPOTS, DOOR };'
+  + '\n;globalThis.__vie = { sessions, applyEndOfDay, applyBlockPause, USAGE, handle };';
 
 let bad = 0;
 const check = (ok, m) => { console.log((ok ? 'OK   ' : 'ECHEC') + '  ' + m); if (!ok) bad++; };
@@ -308,6 +309,79 @@ if (!STREAM) {
   try { for (const ev of fleet) STREAM.deliver(ev); } catch (e) { fleetErr = e; }
   check(!fleetErr, 'les evenements de flotte traversent handle()'
     + (fleetErr ? ' — ' + fleetErr.constructor.name + ' : ' + fleetErr.message : ''));
+}
+
+/* ---------- Pauses subies et fin de journee ---------- */
+// Un poste qui se tait, un bloc de 5 h epuise, 18 h sonnant : trois facons pour une
+// session de se figer sans disparaitre. Ce qu on verifie, c est que les gens gardent
+// leur bureau — sans quoi leur retour devrait reconstruire des affectations que
+// personne ne reannonce, et ils resteraient plantes dans l open space.
+{
+  const vie = globalThis.__vie;
+  if (!vie || !STREAM) {
+    check(false, 'la vie de la piece est accessible depuis le test');
+  } else {
+    const sid = 'poste-9:cafe1234';
+    const base = { session_id: sid, machine: 'poste-9', fleet: true };
+    STREAM.deliver({ ...base, cwd: 'essai-pause', hook_event_name: 'SessionStart' });
+    STREAM.deliver({ ...base, hook_event_name: 'PreToolUse', act: 'task', tool_name: 'Agent',
+      tool_input: { subagent_type: 'Explore' }, tool_use_id: 'p1' });
+    const s = vie.sessions.get(sid);
+    check(!!s && s.subs.length === 1, 'la session d essai existe, avec un sous-agent');
+
+    const gens = () => [s.main, ...s.subs];
+    const bureaux = () => gens().map((a) => a.desk);
+
+    // --- Poste injoignable
+    const avant = bureaux();
+    STREAM.deliver({ hook_event_name: 'MachineOffline', machine: 'poste-9', fleet: true });
+    check(gens().every((a) => a.paused === 'absent'),
+      'un poste injoignable met TOUS ses gens en pause',
+      gens().map((a) => a.paused));
+    check(bureaux().every((d, i) => d === avant[i]),
+      'la pause ne leur fait pas rendre leur bureau');
+    check(s.pod.lampScale < 1, 'l ilot est tamise pendant l absence', s.pod.lampScale);
+
+    STREAM.deliver({ hook_event_name: 'MachineOnline', machine: 'poste-9', fleet: true });
+    check(gens().every((a) => !a.paused), 'le retour du poste leve la pause');
+    check(bureaux().every((d, i) => d === avant[i]),
+      'ils retrouvent exactement le bureau qu ils avaient');
+    check(s.pod.lampScale === 1, 'l ilot se rallume');
+
+    // --- Bloc de 5 h epuise, pour CE poste seulement
+    Object.assign(vie.USAGE, { known: true, elapsed: 1,
+      machines: [{ machine: 'poste-9', elapsed: 1 }, { machine: 'poste-8', elapsed: .2 }] });
+    vie.applyBlockPause();
+    check(gens().every((a) => a.paused === 'bloc'),
+      'un bloc de 5 h epuise met les gens du poste en pause', gens().map((a) => a.paused));
+
+    vie.USAGE.machines = [{ machine: 'poste-9', elapsed: .05 }];
+    vie.applyBlockPause();
+    check(gens().every((a) => !a.paused), 'un bloc neuf les remet au travail');
+
+    // --- 18 h, session qui attend une reponse
+    STREAM.deliver({ ...base, hook_event_name: 'Notification' });
+    check(!!s.alert, 'la session attend une reponse');
+    vie.applyEndOfDay(20);
+    check(s.deserte === true, 'a 20 h, une session sans reponse est desertee');
+    check(gens().every((a) => a.home === true), 'ses gens rentrent chez eux',
+      gens().map((a) => a.state));
+    check(s.pod.lampScale === 0, 'et l ilot s eteint', s.pod.lampScale);
+
+    // Une session qui travaille n est PAS desertee, meme a 20 h.
+    const sid2 = 'poste-9:boss0001';
+    STREAM.deliver({ session_id: sid2, machine: 'poste-9', fleet: true, cwd: 'de-nuit',
+      hook_event_name: 'SessionStart' });
+    STREAM.deliver({ session_id: sid2, machine: 'poste-9', fleet: true,
+      hook_event_name: 'PreToolUse', act: 'term', label: '🖥️ console' });
+    vie.applyEndOfDay(20);
+    const s2 = vie.sessions.get(sid2);
+    check(s2 && !s2.deserte, 'une session qui travaille la nuit reste a son poste');
+
+    // Le matin, ou des qu on repond, tout le monde revient.
+    vie.applyEndOfDay(10);
+    check(!s.deserte && gens().every((a) => !a.home), 'au matin, ils reviennent');
+  }
 }
 
 /* ---------- Quelques images ---------- */

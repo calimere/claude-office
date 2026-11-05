@@ -153,7 +153,7 @@ check('le projet est le dernier segment, quel que soit le separateur',
 const PORT = 4399, TOKEN = 'jeton-de-test';
 const srv = spawn(process.execPath, ['server.js'], {
   env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', OFFICE_TOKEN: TOKEN,
-    ROSTER_FILE: '.roster-test.json', OFFLINE_GRACE: '1500', SWEEP_EVERY: '400' },
+    ROSTER_FILE: '.roster-test.json', OFFLINE_GRACE: '1500', SWEEP_EVERY: '400', ABSENT_TTL: '6000' },
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 srv.stderr.on('data', (d) => process.stdout.write('   [serveur] ' + d));
@@ -227,15 +227,20 @@ check('un instantane fait apparaitre une session ratee',
 check('un instantane fait apparaitre une mission ratee',
   got((e) => e.tool_use_id === 'r9')[0]?.tool_input?.subagent_type === 'Plan');
 
-// Fermeture PROPRE : le poste s en va pour de bon, on demonte sans attendre.
+// Un poste qui se tait n est PAS un poste parti : ses gens passent en pause et
+// l ilot reste. C est MachineOffline qui le dit, pas SessionEnd.
 const before = seen.length;
 agent.close();
 await wait(600);
-check('un depart propre demonte les ilots sans delai',
-  seen.slice(before).filter((e) => e.hook_event_name === 'SessionEnd').length === 2);
+const apresArret = seen.slice(before);
+check('un arret propre met le poste en pause, sans attendre',
+  apresArret.filter((e) => e.hook_event_name === 'MachineOffline').length === 1,
+  apresArret.map((e) => e.hook_event_name));
+check('un arret propre ne demonte PAS les ilots',
+  apresArret.filter((e) => e.hook_event_name === 'SessionEnd').length === 0);
 
-// Coupure BRUTALE : le poste a peut-etre juste perdu le wifi. On attend, et s il
-// revient dans le delai, le spectateur ne doit rien avoir vu.
+// Coupure BRUTALE : le poste a peut-etre juste perdu le wifi. On attend avant de
+// l annoncer, et s il revient entre-temps le spectateur ne doit rien avoir vu.
 {
   const SNAP = JSON.stringify({ v: 1, type: 'snapshot', machine: 'poste-2',
     sessions: [{ session: 'ffff9999', project: 'reseau', tasks: [] }] });
@@ -247,23 +252,59 @@ check('un depart propre demonte les ilots sans delai',
   const avant = seen.length;
   a2.kill(); // cable arrache : aucune trame de fermeture
   await wait(900);
-  check('une coupure brutale ne demonte pas tout de suite',
-    seen.slice(avant).filter((e) => e.hook_event_name === 'SessionEnd').length === 0);
+  check('une coupure brutale n est pas annoncee tout de suite',
+    seen.slice(avant).filter((e) => e.hook_event_name === 'MachineOffline').length === 0,
+    seen.slice(avant).map((e) => e.hook_event_name));
 
   const a3 = await rawWS(PORT, path2);
   a3.send(SNAP);
   await wait(2500); // bien au-dela du delai de grace du test (1,5 s)
-  check('une reconnexion dans le delai annule le demontage',
-    seen.slice(avant).filter((e) => e.hook_event_name === 'SessionEnd').length === 0,
+  check('une reconnexion dans le delai passe inapercue',
+    seen.slice(avant).filter((e) => /^Machine/.test(e.hook_event_name)).length === 0,
     seen.slice(avant).map((e) => e.hook_event_name));
 
-  // Et sans reconnexion, le demontage finit bien par arriver.
+  // Sans reconnexion : pause d abord, puis demontage au bout d ABSENT_TTL.
   const avant2 = seen.length;
   a3.kill();
   await wait(2500);
-  check('sans reconnexion, le delai de grace finit par demonter',
-    seen.slice(avant2).filter((e) => e.hook_event_name === 'SessionEnd').length === 1,
+  // Les tranches voient TOUS les postes : poste-1 expire son propre ABSENT_TTL
+  // pendant ce temps. On filtre, sinon on attribue a poste-2 un demontage qui n est
+  // pas le sien.
+  const finsDe = (arr, poste) => arr.filter((e) => e.hook_event_name === 'SessionEnd'
+    && String(e.session_id).startsWith(poste + ':'));
+
+  check('sans reconnexion, le poste passe en pause',
+    seen.slice(avant2).filter((e) => e.hook_event_name === 'MachineOffline'
+      && e.machine === 'poste-2').length === 1,
     seen.slice(avant2).map((e) => e.hook_event_name));
+  check('la pause ne demonte pas encore l ilot',
+    finsDe(seen.slice(avant2), 'poste-2').length === 0);
+
+  const avant3 = seen.length;
+  await wait(5000); // au-dela d ABSENT_TTL, fixe a 6 s pour ce test
+  check('au bout d ABSENT_TTL, l ilot est enfin demonte',
+    finsDe(seen.slice(avant3), 'poste-2').length === 1,
+    seen.slice(avant3).map((e) => e.hook_event_name + ' ' + (e.session_id || e.machine)));
+}
+
+// Le retour d un poste doit etre annonce, pour que ses gens quittent le cafe.
+{
+  const path4 = '/ingest?token=' + TOKEN + '&machine=poste-4';
+  const a4 = await rawWS(PORT, path4);
+  a4.send(JSON.stringify({ v: 1, type: 'snapshot', machine: 'poste-4',
+    sessions: [{ session: 'aaaa4444', project: 'retour', tasks: [] }] }));
+  await wait(300);
+  a4.kill();
+  await wait(3000); // le temps que la coupure soit annoncee (detection + grace)
+  const avant = seen.length;
+  const a5 = await rawWS(PORT, path4);
+  a5.send(JSON.stringify({ v: 1, type: 'snapshot', machine: 'poste-4',
+    sessions: [{ session: 'aaaa4444', project: 'retour', tasks: [] }] }));
+  await wait(600);
+  check('le retour d un poste est annonce',
+    seen.slice(avant).filter((e) => e.hook_event_name === 'MachineOnline').length === 1,
+    seen.slice(avant).map((e) => e.hook_event_name));
+  a5.kill();
 }
 
 // Le mode local doit continuer de marcher tel quel, avec son detail.
@@ -275,12 +316,17 @@ await new Promise((done) => {
 await wait(200);
 check('le mode local /event relaie toujours le detail', got((e) => e.session_id === 'local-1').length === 1);
 
+// Un poste absent SURVIT desormais, en pause, jusqu a ABSENT_TTL. On attend donc
+// qu il expire avant de verifier qu il ne reste rien. Compter la detection de la
+// socket morte (SWEEP_EVERY) en plus du TTL lui-meme.
+await wait(8000);
 const diag = await new Promise((done) => {
   http.get({ host: '127.0.0.1', port: PORT, path: '/sessions' }, (res) => {
     let b = ''; res.on('data', (c) => b += c); res.on('end', () => done(JSON.parse(b)));
   });
 });
-check('aucune activite ne survit au depart du poste', diag.machines.length === 0, diag.machines);
+check('une fois ABSENT_TTL passe, plus aucune machine ne subsiste',
+  diag.machines.length === 0, diag.machines);
 check('le roster, lui, survit', diag.roster.includes('Explore') && diag.roster.includes('Plan'), diag.roster);
 
 srv.kill();

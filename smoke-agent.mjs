@@ -160,13 +160,19 @@ check('le serveur voit le sous-agent encore au travail',
 const beforeKill = seen.length;
 agent.kill();
 await wait(800);
-check('les ilots survivent au tout premier instant de la coupure',
-  !seen.slice(beforeKill).some((e) => e.hook_event_name === 'SessionEnd'),
+check('rien ne bouge au tout premier instant de la coupure',
+  seen.slice(beforeKill).length === 0,
   seen.slice(beforeKill).map((e) => e.hook_event_name));
 await wait(1600); // au-dela du delai de grace du test
-check('les ilots sont demontes une fois le delai de grace passe',
-  seen.slice(beforeKill).some((e) => e.hook_event_name === 'SessionEnd'),
-  seen.slice(beforeKill).map((e) => e.hook_event_name));
+// Un poste tue n est pas un poste parti : ses gens passent en pause, et l ilot
+// reste debout jusqu a ABSENT_TTL. C est MachineOffline qui le dit.
+const apresCoupure = seen.slice(beforeKill);
+check('la coupure met le poste en pause',
+  apresCoupure.some((e) => e.hook_event_name === 'MachineOffline'),
+  apresCoupure.map((e) => e.hook_event_name));
+check('et ne demonte pas les ilots',
+  !apresCoupure.some((e) => e.hook_event_name === 'SessionEnd'),
+  apresCoupure.map((e) => e.hook_event_name));
 
 check('l agent annonce clairement sa configuration au demarrage',
   agentOut.join('').includes('poste-test') && agentOut.join('').includes('/status'),

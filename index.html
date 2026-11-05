@@ -424,13 +424,7 @@ function applyDaylight(hour) {
   // l'intensite, pour que la couleur du projet reste la sienne.
   const lvl = lampLevel(hour);
   for (const pod of pods) {
-    pod.lampLight.intensity = 15 * lvl;
-    // Une suspension eteinte n'a rien a faire dans la liste des lumieres de la
-    // scene : three.js ignore les objets non visibles quand il la constitue. A vingt
-    // ilots, ce sont vingt lumieres ponctuelles que chaque fragment du decor cesse
-    // de parcourir en plein jour — et le decor, c'est toute la piece.
-    pod.lampLight.visible = lvl > .02;
-    pod.bulb.material.emissiveIntensity = .15 + 1.45 * lvl;
+    pod.applyLamp(lvl);
   }
 }
 
@@ -1549,6 +1543,24 @@ class Pod {
     const d = this.desks.find((k) => !k.busy) ?? this.desks[this.desks.length - 1];
     d.busy = true; d.occupants = (d.occupants || 0) + 1; return d;
   }
+  // La suspension suit le cycle du jour, mais aussi l'etat de l'ilot : tamisee
+  // quand le poste ne repond plus, eteinte quand les gens sont partis le soir. Le
+  // dernier niveau du jour est retenu pour qu'un changement d'etat s'applique tout
+  // de suite, sans attendre le prochain tour du cycle.
+  applyLamp(lvl) {
+    if (lvl != null) this.lampLevel = lvl;
+    const k = this.lampScale ?? 1;
+    const l = (this.lampLevel ?? 0) * k;
+    this.lampLight.intensity = 15 * l;
+    // Une suspension eteinte n'a rien a faire dans la liste des lumieres de la
+    // scene : three.js ignore les objets non visibles quand il la constitue. A vingt
+    // ilots, ce sont vingt lumieres ponctuelles que chaque fragment du decor cesse
+    // de parcourir en plein jour — et le decor, c'est toute la piece.
+    this.lampLight.visible = l > .02;
+    this.bulb.material.emissiveIntensity = (.15 + 1.45 * (this.lampLevel ?? 0)) * k;
+  }
+  // Tamise l'ilot (poste injoignable) ou l'eteint tout a fait (bureau deserte).
+  setLampScale(k) { this.lampScale = k; this.applyLamp(); }
   setBeacon(color) {
     this.beaconColor = color ?? null;
     this.beacon.visible = color != null;
@@ -1789,6 +1801,17 @@ const tmp = new V3();
 // un agent qui rejoint son bureau est deja sur le dossier, et le faire clignoter en
 // « repos » pendant sa traversee ne dirait rien de vrai.
 const WORK_ACTS = new Set(['read', 'type', 'term', 'web', 'plan', 'think', 'walk']);
+
+// Les pauses subies. Un libellé par motif : « en pause » tout court laisserait
+// croire à une pause choisie, alors que c'est la machine ou le quota qui décide.
+const PAUSE_LABEL = {
+  absent: '☕ poste injoignable',
+  bloc: '☕ bloc de 5 h épuisé',
+};
+const PAUSE_WALK = {
+  absent: '🚶 le poste ne répond plus',
+  bloc: '🚶 fin du bloc de 5 h',
+};
 const STATUS_ICON = { work: '💼', ask: '❓', rest: '☕' };
 const STATUS_LABEL = { work: 'au travail', ask: 'attend ta réponse', rest: 'au repos' };
 
@@ -2005,6 +2028,64 @@ class Agent {
     this.path = this.toDesk();
     this.set('walk', '🚶 revient du café');
   }
+  // Pause SUBIE, par opposition a la pause café qu'on demande : le poste ne répond
+  // plus, ou le bloc de 5 h est épuisé. Contrairement à goIdle(), l'employé GARDE
+  // son bureau et son îlot — il ne quitte pas le dossier, il attend. Sans ça, le
+  // retour du poste devrait reconstruire des affectations que plus personne ne
+  // réannonce : le serveur ne réémet que ce qui a changé.
+  toPause(motif) {
+    if (this.paused) return;
+    this.paused = motif;
+    // Le bar d'abord : une pause subie se prend debout au café, pas vautré.
+    const avant = this.spot?.kind;
+    this.freeSpot();
+    const spot = claimSpot() ?? claimLeisure(avant);
+    if (!spot) { // tout est plein : on reste sur place, mais au repos
+      this.state = 'idle'; this.path = [];
+      this.set('coffee', PAUSE_LABEL[motif] || '☕ en pause');
+      return;
+    }
+    this.spot = spot;
+    this.state = spot.kind === 'coffee' ? 'tocoffee' : 'toleisure';
+    this.path = this.toSpot(spot);
+    this.set('walk', PAUSE_WALK[motif] || '🚶 va en pause');
+  }
+  // Fin de journée : on sort par la porte. L'employé n'est pas congédié — il garde
+  // son bureau et son dossier, il rentre. La porte n'avait plus servi dans ce sens
+  // depuis que la maison garde ses gens : elle ne servait plus qu'aux arrivées.
+  goHome() {
+    if (this.home) return;
+    this.home = true;
+    this.paused = null;
+    this.freeSpot();
+    this.state = 'gohome';
+    this.path = this.routeTo(DOOR);
+    this.set('walk', '🚶 rentre');
+  }
+  // Retour : on réapparaît à la porte, et on regagne son bureau.
+  comeBack() {
+    if (!this.home) return;
+    this.home = false;
+    this.c.g.visible = true;
+    this.el.hidden = false;
+    this.c.g.position.copy(DOOR);
+    if (!this.desk || !this.pod) { this.goIdle(); return; }
+    this.state = 'walkin';
+    this.path = this.toDesk();
+    this.set('walk', '🚶 revient');
+  }
+  // Fin de la pause subie : on retourne au bureau qu'on n'a jamais rendu.
+  resumeFromPause() {
+    if (!this.paused) return;
+    this.paused = null;
+    this.freeSpot();
+    // Un employé dont l'îlot a été démonté entre-temps n'a plus de poste : il
+    // rejoint l'open space comme après une mission.
+    if (!this.desk || !this.pod) { this.goIdle(); return; }
+    this.state = 'walkin';
+    this.path = this.toDesk();
+    this.set('walk', '🚶 reprend le travail');
+  }
   // Affecte a un dossier : l'employe rejoint l'ilot qui l'appelle. C'est la seule
   // facon de changer d'ilot — un employe appartient a la maison, pas a une session.
   // `instant` sert au rejeu d'une page rechargee : l'employe travaillait deja quand
@@ -2086,6 +2167,10 @@ class Agent {
   }
 
   update(dt, t) {
+    // Parti pour la soiree : plus de corps dans la piece, donc rien a animer. On
+    // sort avant le visage, les chutes et le reste — un absent ne cligne pas des
+    // yeux et ne se fait pas bousculer.
+    if (this.state === 'away') return;
     const c = this.c, g = c.g, ph = hash(this.id) % 10;
     this.face(t);
     if (this.fall) { this.updateFall(t); return; }
@@ -2104,12 +2189,17 @@ class Agent {
         if (this.state === 'walkin') {
           this.state = 'work';
           if (this.act === 'walk') this.set('think', this.task ? '💭 ' + trunc(this.task, 34) : '💭 prêt');
+        } else if (this.state === 'gohome') {
+          // Arrive a la porte : on s'efface. Le bureau reste reserve.
+          this.state = 'away';
+          c.g.visible = false;
+          this.el.hidden = true;
         } else if (this.state === 'tocoffee') {
           this.state = 'coffee';
           this.cupless = false; // tasse neuve
           this.coffeeUntil = t + COFFEE_SEC;
           this.faceAngle = Math.atan2(-(COFFEE.x - g.position.x), -(COFFEE.z - g.position.z));
-          this.set('coffee', '☕ pause café');
+          this.set('coffee', this.paused ? PAUSE_LABEL[this.paused] : '☕ pause café');
         } else if (this.state === 'toleisure') {
           // Arrive a sa place de repos. On ne fixe pas de fin : l'employe changera
           // simplement d'occupation au bout d'un moment, ou repartira sur un dossier.
@@ -2128,8 +2218,11 @@ class Agent {
     const resting = standing || onCouch;
     // Le lead rentre tenir son poste quand sa pause s'achève ; un employé, lui, ne
     // rentre nulle part — il change juste d'occupation.
-    if (this.state === 'coffee' && t >= this.coffeeUntil) { this.backToDesk(); return; }
-    if (this.state === 'leisure') {
+    // Une pause SUBIE ne s'achève pas toute seule : elle dure tant que le poste se
+    // tait ou que le bloc est épuisé. Les deux minuteries ci-dessous ne valent que
+    // pour les pauses choisies.
+    if (this.state === 'coffee' && !this.paused && t >= this.coffeeUntil) { this.backToDesk(); return; }
+    if (this.state === 'leisure' && !this.paused) {
       // Un employé repris de la mémoire du serveur arrive sans minuterie : on la lui
       // pose à sa première frame plutôt que de la calculer hors de la boucle.
       if (this.idleUntil == null) this.idleUntil = t + 45 + (hash(this.id) % 60);
@@ -2329,6 +2422,23 @@ function finishSub(s, sub, label) {
   s.main.set('read', '📥 lit le rapport');
 }
 
+// Un poste injoignable : veille, wifi coupé, fenêtre fermée. Ses sessions existent
+// toujours quelque part — elles ne nous parlent simplement plus. Ses gens passent
+// donc en pause, et gardent leur bureau : ils ne quittent pas le dossier. L'îlot
+// est tamisé pour qu'on voie la différence avec une vraie pause café.
+function setMachineAbsent(machine, absent) {
+  if (!machine) return;
+  for (const s of sessions.values()) {
+    if (s.machine !== machine) continue;
+    s.absent = absent;
+    s.pod.setLampScale(absent ? .3 : 1);
+    for (const a of [s.main, ...s.subs]) {
+      if (absent) a.toPause('absent'); else a.resumeFromPause();
+    }
+  }
+  renderSessions();
+}
+
 function handle(ev) {
   const sid = ev.session_id || 'local', evn = ev.hook_event_name;
   // L'effectif rejoué par le serveur : des employés, pas une session. Traité avant
@@ -2336,6 +2446,13 @@ function handle(ev) {
   if (evn === 'Staff') {
     for (const type of ev.staff || []) hire(type);
     renderSessions();
+    return;
+  }
+  // Un poste entier se tait, ou revient. Ça ne concerne aucune session en
+  // particulier : ça les concerne toutes, celles de cette machine. Traité ici, avant
+  // que l'absence de session_id ne fabrique un îlot fantôme.
+  if (evn === 'MachineOffline' || evn === 'MachineOnline') {
+    setMachineAbsent(ev.machine, evn === 'MachineOffline');
     return;
   }
   let s = sessions.get(sid);
@@ -2810,9 +2927,65 @@ async function pullUsage() {
       FATIGUE = usageRatio();
       clockDirty = true;
       renderUsage();
+      applyBlockPause();
     }
   } catch { /* serveur indisponible : la jauge reste a sa derniere valeur */ }
 }
+// Bloc de 5 h épuisé : les gens du poste concerné vont en pause. En flotte, chaque
+// poste a SON bloc, ouvert à une heure différente — `/usage` renvoie le détail par
+// machine, et c'est lui qu'on lit. Se fier à l'agrégat enverrait tout le plateau au
+// café parce qu'une seule machine a fini son bloc.
+//
+// Le seuil n'est pas 1 tout rond : la jauge est rafraîchie toutes les 30 s, donc on
+// arriverait à 100 % une demi-minute après coup.
+const BLOC_SEUIL = .995;
+function applyBlockPause() {
+  const parPoste = Array.isArray(USAGE.machines) && USAGE.machines.length
+    ? new Map(USAGE.machines.map((m) => [m.machine, m.elapsed]))
+    : null;
+  for (const s of sessions.values()) {
+    // Un poste déjà injoignable est en pause pour une raison plus forte : on ne
+    // vient pas lui en substituer une autre.
+    if (s.absent) continue;
+    const r = parPoste ? (parPoste.get(s.machine) ?? 0) : usageRatio();
+    const epuise = r >= BLOC_SEUIL;
+    if (epuise === !!s.blocEpuise) continue;
+    s.blocEpuise = epuise;
+    s.pod.setLampScale(epuise ? .45 : 1);
+    for (const a of [s.main, ...s.subs]) {
+      if (epuise) a.toPause('bloc'); else a.resumeFromPause();
+    }
+  }
+  renderSessions();
+}
+
+// Dix-huit heures. Une session qui attend une réponse ne l'aura pas ce soir : ses
+// gens rentrent chez eux. L'îlot RESTE — la session existe toujours, elle attend
+// toujours — mais il s'éteint. Un bureau vide le dit mieux qu'un îlot démonté, qui
+// prétendrait que la session est finie.
+//
+// `?depart=20` décale l'heure ; avec `?clock=`, qui fait défiler la journée en
+// accéléré, c'est la seule façon de voir le départ sans attendre le soir.
+const HEURE_DEPART = Number(params.get('depart')) || 18;
+function applyEndOfDay(hour) {
+  const soir = hour >= HEURE_DEPART || hour < 6;
+  let bouge = false;
+  for (const s of sessions.values()) {
+    // Un poste injoignable est déjà figé pour une raison plus forte, et ses gens
+    // ne peuvent pas « rentrer » d'un bureau où ils ne sont plus.
+    const partir = soir && !!s.alert && !s.absent;
+    if (partir === !!s.deserte) continue;
+    s.deserte = partir;
+    s.pod.setLampScale(partir ? 0 : 1);
+    for (const a of [s.main, ...s.subs]) {
+      if (partir) a.goHome(); else a.comeBack();
+    }
+    bouge = true;
+  }
+  // Appelee quatre fois par seconde : on ne refait le panneau que s'il a change.
+  if (bouge) renderSessions();
+}
+
 setTimeout(pullUsage, 900);
 setInterval(pullUsage, 30e3);
 
@@ -3097,7 +3270,7 @@ renderer.setAnimationLoop(() => {
   // L'heure avance en continu. On ne recalcule l'eclairage que quatre fois par
   // seconde — sauf en horloge acceleree, ou il faut suivre image par image.
   const hour = nowHours(t);
-  if (CLOCK_SPEED > 0 || t - dayLast > .25) { applyDaylight(hour); dayLast = t; }
+  if (CLOCK_SPEED > 0 || t - dayLast > .25) { applyDaylight(hour); applyEndOfDay(hour); dayLast = t; }
 
   // Le dehors n'est redessine que s'il bouge : pluie, neige et nuages a 10 images
   // par seconde, le reste seulement quand quelque chose a change. Redessiner une
