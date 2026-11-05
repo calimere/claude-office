@@ -379,6 +379,22 @@ besoin d'arguments. L'ordre est : fichier, puis `OFFICE_SERVER` / `OFFICE_TOKEN`
 **Sans `-server`**, l'agent ne fait que la vue locale : c'est un `server.js` en plus
 petit, et rien ne quitte la machine.
 
+#### Sous Windows, le lanceur
+
+`agent/lancer-agent.bat` évite d'avoir à expliquer une ligne de commande à un collègue.
+Pose à côté un fichier `agent.cfg` :
+
+```
+SERVEUR=http://adresse-du-serveur:4317
+JETON=le-jeton-donné-par-l-administrateur
+```
+
+Double-clic : il enregistre la configuration dans `%APPDATA%`, et les fois suivantes il
+se suffit à lui-même — `agent.cfg` ne sert plus. Si `index.html` est un cran au-dessus
+(donc si on lance depuis le dépôt), il active aussi la vue locale.
+
+`agent.cfg` **n'est pas versionné** : ce dépôt est public, et un jeton n'a rien à y faire.
+
 **La vue locale garde le détail.** Sur `http://127.0.0.1:4317/`, l'agent sert la page et
 lui diffuse les hooks **bruts** — noms de fichiers, commandes, prompts. C'est ton poste,
 ça ne va nulle part. Seul ce qui part vers la flotte est assaini. Il faut qu'`index.html`
@@ -459,6 +475,13 @@ si l'agent n'est pas compilé.
 
 ## Limites connues
 
+- **L'identifiant de session est tronqué à 8 caractères.** Deux sessions dont les
+  8 premiers caractères coïncident se fondent en un seul îlot, et leurs sous-agents
+  s'empilent dessus. Sur de vrais identifiants Claude Code — des UUID — ce sont
+  4,3 milliards de valeurs pour quelques sessions par poste : la collision ne se produit
+  pas. Mais elle se produit immédiatement avec des identifiants fabriqués à la main
+  (`essai-1`, `essai-2`…), ce qui compte quand on teste. Utilisez des identifiants qui
+  diffèrent dans les huit premiers caractères.
 - **À pleine charge, la pièce est lourde.** Vingt îlots, ce sont jusqu'à 80 personnages,
   et la nuit vingt lumières ponctuelles — une par suspension. Deux économies ont été
   faites : le gyrophare n'a plus qu'**une** lumière pour toute la pièce, qui se pose sur
