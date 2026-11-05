@@ -16,9 +16,29 @@
     font-size:11px; box-shadow:0 6px 18px rgba(0,0,0,.4); backdrop-filter:blur(3px); }
   .label b, .label .t { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .label .t { color:var(--muted); }
+  /* Pastille d'etat : travail, question, repos. Elle se lit de loin, quand le texte
+     de la bulle est deja trop petit — c'est elle qu'on suit sur un plateau de vingt
+     ilots, pas le libelle. */
+  .label .st { position:absolute; top:-7px; left:-7px; width:17px; height:17px;
+    line-height:17px; text-align:center; font-size:10px; font-style:normal;
+    border-radius:50%; background:var(--panel); border:1px solid var(--line); }
+  .label[data-st=ask] .st { border-color:#e0695e; animation:pulse 1.2s infinite; }
+  .label[data-st=rest] .st { border-color:#d9a05b; }
+  /* Caméra reculée : la bulle dit de moins en moins, jusqu'à n'être que sa pastille.
+     Voir applyLabelDensity(). */
+  #labels[data-dense=compact] .label .t,
+  #labels[data-dense=compact] .label .say { display:none; }
+  #labels[data-dense=pastille] .label { padding:0; border:0; background:none;
+    box-shadow:none; backdrop-filter:none; max-width:none; }
+  #labels[data-dense=pastille] .label b,
+  #labels[data-dense=pastille] .label .t,
+  #labels[data-dense=pastille] .label .say { display:none; }
+  #labels[data-dense=pastille] .label .st { position:static; display:block;
+    width:20px; height:20px; line-height:19px; font-size:11px; }
   .label[data-act=wait] { border-color:#e0695e; animation:pulse 1.2s infinite; }
   .label[data-act=coffee] { border-color:#d9a05b; }
   .label[data-act=game] { border-color:#8a9fd6; }
+  .label[data-act=fall] { border-color:#e0a03c; }
   #sessions .staff { margin-top:6px; padding-top:6px; border-top:1px solid var(--line);
     color:var(--muted); font-size:10px; }
   @keyframes pulse { 50% { box-shadow:0 0 0 5px rgba(224,105,94,.3); } }
@@ -66,6 +86,14 @@
     background:radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0) 42%, rgba(12,7,4,.5) 100%); }
   #grain { position:fixed; inset:0; pointer-events:none; z-index:4; opacity:.05;
     background-repeat:repeat; mix-blend-mode:overlay; }
+  #actions-wrap { position:relative; }
+  #actions-menu { position:absolute; top:calc(100% + 6px); left:0; z-index:5; min-width:250px;
+    background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:5px;
+    box-shadow:0 10px 28px rgba(0,0,0,.42); backdrop-filter:blur(3px); }
+  #actions-menu button { display:block; width:100%; text-align:left; background:none; border:0;
+    color:var(--fg); font:inherit; font-size:12px; padding:7px 10px; border-radius:9px; cursor:pointer; }
+  #actions-menu button:hover, #actions-menu button:focus-visible { background:rgba(255,222,186,.1); outline:none; }
+  #actions-menu small { display:block; color:var(--muted); font-size:10px; }
   #vol { width:84px; accent-color:#e0a95c; vertical-align:middle; }
 </style>
 <script type="importmap">
@@ -80,6 +108,13 @@
 <div id="labels"></div>
 <div id="hud"><span class="pill">Claude Office</span><span id="status" class="pill">Connexion…</span>
 <span id="sound" class="pill btn" role="button" aria-pressed="false" title="Son des appels">🔕 Son</span>
+<span id="actions-wrap"><span id="actions" class="pill btn" role="button" aria-haspopup="menu" aria-expanded="false" title="Mettre un peu d'animation">🎬 Actions ▾</span>
+<div id="actions-menu" role="menu" hidden>
+<button role="menuitem" data-action="fall">💥 Tout le monde par terre<small>sauf ceux qui travaillent</small></button>
+<button role="menuitem" data-action="shuffle">🔀 Tout le monde change de place<small>les employés au repos</small></button>
+<button role="menuitem" data-action="cat">🐈 Réveiller le chat</button>
+<button role="menuitem" data-action="mop">🧽 Éponger le café renversé</button>
+</div></span>
 <span id="wx" class="pill" hidden></span>
 <span id="usage" class="pill" hidden></span>
 <input id="vol" type="range" min="0" max="100" value="35" hidden title="Volume de l'ambiance">
@@ -127,7 +162,22 @@ controls.enableDamping = true;
 let camSpan = 8.5;
 const camTarget = new V3();
 
+// Densité des bulles. À pleine charge, quarante bulles recouvrent le plateau et on
+// ne voit plus la pièce. Plus la caméra recule, moins elles en disent : d'abord le
+// libellé d'activité disparaît, puis tout sauf la pastille d'état. À vingt îlots,
+// « il travaille / il t'attend / il se repose » est de toute façon le seul niveau de
+// détail qu'on peut encore lire.
+// Le document est interrogé à chaque appel plutôt que capturé dans une constante :
+// `resize()` tourne bien avant que le reste du module ne soit évalué.
+let labelDensity = '';
+function applyLabelDensity() {
+  labelDensity = camSpan > 26 ? 'pastille' : camSpan > 17 ? 'compact' : '';
+  const el = document.getElementById('labels');
+  if (el) el.dataset.dense = labelDensity;
+}
+
 function resize() {
+  applyLabelDensity();
   if (composer) composer.setSize(innerWidth, innerHeight);
   const w = innerWidth, h = innerHeight, a = w / h;
   const s = Math.max(camSpan, camSpan * 1.4 / a);
@@ -137,13 +187,38 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
+// Pièce — dimensionnée pour la grille d'îlots (voir POD_* plus bas).
+//
+// Elle ne grandit QUE vers le fond et vers la gauche. Le bord avant ne bouge pas :
+// c'est la bande du café, du salon et des places debout, celle que la caméra voit de
+// plus près. L'étirer aurait éloigné le mobilier de repos du spectateur et laissé
+// une langue de parquet vide au premier plan.
+//
+// D'où `front` et `back` plutôt qu'une profondeur centrée sur l'origine : le centre
+// géométrique de la pièce (`cz`) n'est plus z = 0, et tout ce qui est posé contre un
+// mur se place désormais par rapport à ce mur, jamais par rapport à l'origine.
+const ROOM = { w: 46, front: 11, back: -26 };
+ROOM.d = ROOM.front - ROOM.back;
+ROOM.cz = (ROOM.front + ROOM.back) / 2;
+// Raccourcis de lecture : « contre le mur de gauche », « contre le mur du fond ».
+const wallL = (k) => -ROOM.w / 2 + k;
+const wallR = (k) => ROOM.w / 2 - k;
+const wallB = (k) => ROOM.back + k;
+const wallF = (k) => ROOM.front - k;
+
 // Lumière d'intérieur : ciel tiède, rebond chaud du parquet, soleil rasant adouci.
 scene.add(new THREE.HemisphereLight(0xffe7cc, 0x4a3426, 0.85));
 const sun = new THREE.DirectionalLight(0xffd9a8, 1.15);
-sun.position.set(8, 20, 12); sun.castShadow = true;
+// La lumiere ET sa cible sont decalees du meme z : la direction du soleil ne change
+// pas, mais son volume d'ombre se recentre sur la piece. Sans ce decalage, les ilots
+// du fond seraient eclaires sans jamais projeter — une moitie de plateau qui flotte.
+sun.position.set(8, 20, 12 + ROOM.cz); sun.castShadow = true;
+sun.target.position.set(0, 0, ROOM.cz); scene.add(sun.target);
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.radius = 3; sun.shadow.bias = -0.0008;
-Object.assign(sun.shadow.camera, { left: -22, right: 22, top: 22, bottom: -22, far: 60 });
+const shadowSpan = Math.max(ROOM.w, ROOM.d) * .62 + 8;
+Object.assign(sun.shadow.camera, { left: -shadowSpan, right: shadowSpan,
+  top: shadowSpan, bottom: -shadowSpan, far: 90 });
 scene.add(sun);
 const ambient = new THREE.AmbientLight(0xffd9b8, 0.22); scene.add(ambient); // évite le noir dur
 const hemi = scene.children.find((o) => o.isHemisphereLight) ?? null;
@@ -350,6 +425,11 @@ function applyDaylight(hour) {
   const lvl = lampLevel(hour);
   for (const pod of pods) {
     pod.lampLight.intensity = 15 * lvl;
+    // Une suspension eteinte n'a rien a faire dans la liste des lumieres de la
+    // scene : three.js ignore les objets non visibles quand il la constitue. A vingt
+    // ilots, ce sont vingt lumieres ponctuelles que chaque fragment du decor cesse
+    // de parcourir en plein jour — et le decor, c'est toute la piece.
+    pod.lampLight.visible = lvl > .02;
     pod.bulb.material.emissiveIntensity = .15 + 1.45 * lvl;
   }
 }
@@ -360,8 +440,6 @@ function box(w, h, d, color, extra = {}) {
   m.castShadow = true; m.receiveShadow = true; return m;
 }
 
-// Pièce — dimensionnée pour la grille d'îlots (voir POD_* plus bas)
-const ROOM = { w: 30, d: 22 };
 
 // Parquet dessiné sur canvas : des lames un peu dépareillées valent mieux qu'un aplat.
 function parquetTexture() {
@@ -385,28 +463,32 @@ function parquetTexture() {
     }
   }
   const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(3, 2.2);
+  // Répétition proportionnelle à la pièce : une lame doit garder la même taille
+  // quand la pièce grandit, sinon le parquet s'étire avec elle.
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(ROOM.w / 10, ROOM.d / 10);
   t.anisotropy = 8; return t;
 }
 
-const floor = box(ROOM.w, .2, ROOM.d, 0x4a3524); floor.position.y = -.1; scene.add(floor);
+const floor = box(ROOM.w, .2, ROOM.d, 0x4a3524); floor.position.set(0, -.1, ROOM.cz); scene.add(floor);
 const floorTop = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.w, ROOM.d),
   new THREE.MeshStandardMaterial({ map: parquetTexture(), roughness: .88 }));
-floorTop.rotation.x = -Math.PI / 2; floorTop.position.y = .002;
+floorTop.rotation.x = -Math.PI / 2; floorTop.position.set(0, .002, ROOM.cz);
 floorTop.receiveShadow = true; scene.add(floorTop);
 
 // Murs : plâtre tiède + soubassement bois, nettement plus doux qu'un gris-bleu.
 const PLASTER = 0xa89079, WAINSCOT = 0x6d4b33;
-const back = box(ROOM.w, 3.6, .2, PLASTER); back.position.set(0, 1.8, -ROOM.d / 2 - .1); scene.add(back);
-const left = box(.2, 3.6, ROOM.d, PLASTER); left.position.set(-ROOM.w / 2 - .1, 1.8, 0); scene.add(left);
-const backLow = box(ROOM.w, 1.05, .08, WAINSCOT); backLow.position.set(0, .52, -ROOM.d / 2 + .01); scene.add(backLow);
-const leftLow = box(.08, 1.05, ROOM.d, WAINSCOT); leftLow.position.set(-ROOM.w / 2 + .01, .52, 0); scene.add(leftLow);
-const backRail = box(ROOM.w, .09, .13, 0x5c3f2a); backRail.position.set(0, 1.07, -ROOM.d / 2 + .02); scene.add(backRail);
-const leftRail = box(.13, .09, ROOM.d, 0x5c3f2a); leftRail.position.set(-ROOM.w / 2 + .02, 1.07, 0); scene.add(leftRail);
+const back = box(ROOM.w, 3.6, .2, PLASTER); back.position.set(0, 1.8, wallB(-.1)); scene.add(back);
+const left = box(.2, 3.6, ROOM.d, PLASTER); left.position.set(wallL(-.1), 1.8, ROOM.cz); scene.add(left);
+const backLow = box(ROOM.w, 1.05, .08, WAINSCOT); backLow.position.set(0, .52, wallB(.01)); scene.add(backLow);
+const leftLow = box(.08, 1.05, ROOM.d, WAINSCOT); leftLow.position.set(wallL(.01), .52, ROOM.cz); scene.add(leftLow);
+const backRail = box(ROOM.w, .09, .13, 0x5c3f2a); backRail.position.set(0, 1.07, wallB(.02)); scene.add(backRail);
+const leftRail = box(.13, .09, ROOM.d, 0x5c3f2a); leftRail.position.set(wallL(.02), 1.07, ROOM.cz); scene.add(leftRail);
 
-const door = box(.12, 2.3, 1.5, 0x6b4428); door.position.set(-ROOM.w / 2 + .03, 1.15, 7); scene.add(door);
+// La porte reste à l'avant gauche : c'est par là qu'on arrive, et le couloir de
+// gauche la relie désormais à toutes les allées.
+const door = box(.12, 2.3, 1.5, 0x6b4428); door.position.set(wallL(.03), 1.15, wallF(4)); scene.add(door);
 const doorKnob = box(.1, .12, .12, 0xc9a227, { metalness: .6, roughness: .4 });
-doorKnob.position.set(-ROOM.w / 2 + .12, 1.15, 7.55); scene.add(doorKnob);
+doorKnob.position.set(wallL(.12), 1.15, wallF(3.45)); scene.add(doorKnob);
 
 // Fenêtres : lumière de fin d'après-midi plutôt que néon bleu.
 function window3d(x, z) {
@@ -422,8 +504,11 @@ function window3d(x, z) {
   windowPanes.push(pane);
   return g;
 }
-window3d(2.5, -ROOM.d / 2 + .06);
-window3d(9.5, -ROOM.d / 2 + .06);
+// Le mur du fond s'est allongé : deux fenêtres y flottaient. On en pose une de plus,
+// au même pas de 7 — le rythme compte plus que le nombre.
+window3d(2.5, wallB(.06));
+window3d(9.5, wallB(.06));
+window3d(16.5, wallB(.06));
 // Premier rendu du ciel seulement. applyDaylight n'est PAS appele ici : il pilote
 // desormais les suspensions, donc il lit `pods`, qui n'est declare que bien plus bas.
 // L'appeler maintenant leverait une ReferenceError de zone morte et tuerait tout le
@@ -470,7 +555,7 @@ function wordmarkTexture() {
 }
 const logoMat = new THREE.MeshBasicMaterial({ map: wordmarkTexture(), transparent: true });
 const logo = new THREE.Mesh(new THREE.PlaneGeometry(6.4, 1.6), logoMat);
-logo.position.set(-5.5, 2.3, -ROOM.d / 2 + .02); scene.add(logo);
+logo.position.set(-5.5, 2.3, wallB(.02)); scene.add(logo);
 new THREE.TextureLoader().load('logo.png',
   (tex) => { logoMat.map?.dispose(); logoMat.map = tex; logoMat.needsUpdate = true; },
   undefined, () => {}); // pas de logo.png : on garde le lettrage dessiné
@@ -482,26 +567,24 @@ new THREE.TextureLoader().load('logo.png',
 //
 // Disposition en trois bandes paralleles, pour qu'une voie d'acces passe entre elles
 // sans traverser ni le bar ni le mange-debout :
-//   x ~ 10,6  comptoir + machine
-//   x = 12,5  CAFE_LANE_X, la voie d'acces
-//   x ~ 13,3  les places debout, face au bar
-//   x ~ 14,2  le mange-debout
-const CAFE_Z = 8.2;       // au-dela, on est dans le coin cafe (voir fromHere())
-const CAFE_LANE_X = 12.5; // voie d'acces : a droite des cloisons (x = 12,05), a gauche des places
-const COFFEE = new V3(14.2, 0, 9.6);
+//   wallR(4,4)  comptoir + machine
+//   wallR(2,5)  la voie d'acces (trouvee par l'A*, voir buildNav())
+//   wallR(1,7)  les places debout, face au bar
+//   wallR(0,8)  le mange-debout
+const COFFEE = new V3(wallR(.8), 0, wallF(1.4));
 
-const counter = box(1.2, 1.0, 2.6, 0x6d4b33); counter.position.set(10.6, .5, 9.6); scene.add(counter);
-const counterTop = box(1.34, .1, 2.74, 0x8a6442); counterTop.position.set(10.6, 1.03, 9.6); scene.add(counterTop);
-const machine = box(.7, .9, 1.0, 0x2e2622); machine.position.set(10.55, 1.53, 9.6); scene.add(machine);
-const machineTop = box(.76, .1, 1.06, 0x4a3a32); machineTop.position.set(10.55, 2.02, 9.6); scene.add(machineTop);
+const counter = box(1.2, 1.0, 2.6, 0x6d4b33); counter.position.set(wallR(4.4), .5, COFFEE.z); scene.add(counter);
+const counterTop = box(1.34, .1, 2.74, 0x8a6442); counterTop.position.set(wallR(4.4), 1.03, COFFEE.z); scene.add(counterTop);
+const machine = box(.7, .9, 1.0, 0x2e2622); machine.position.set(wallR(4.45), 1.53, COFFEE.z); scene.add(machine);
+const machineTop = box(.76, .1, 1.06, 0x4a3a32); machineTop.position.set(wallR(4.45), 2.02, COFFEE.z); scene.add(machineTop);
 const spout = box(.22, .26, .1, 0xb9b2a6, { metalness: .5, roughness: .4 });
-spout.position.set(10.95, 1.35, 9.6); scene.add(spout);
+spout.position.set(wallR(4.05), 1.35, COFFEE.z); scene.add(spout);
 const coffeeLed = box(.1, .1, .02, 0xff6b3b, { emissive: 0xff6b3b });
-coffeeLed.position.set(10.92, 1.75, 9.28); scene.add(coffeeLed);
+coffeeLed.position.set(wallR(4.08), 1.75, COFFEE.z - .32); scene.add(coffeeLed);
 for (const dz of [-.45, 0, .45]) { // tasses alignees sur le comptoir
   const cup = new THREE.Mesh(new THREE.CylinderGeometry(.09, .07, .14, 10),
     new THREE.MeshStandardMaterial({ color: 0xf2e8da, roughness: .6 }));
-  cup.position.set(10.3, 1.15, 9.6 + dz); cup.castShadow = true; scene.add(cup);
+  cup.position.set(wallR(4.7), 1.15, COFFEE.z + dz); cup.castShadow = true; scene.add(cup);
 }
 
 // Mange-debout : barre allongee le long de z, pour tenir dans la bande libre.
@@ -518,8 +601,8 @@ for (const dz of [-1.0, 1.0]) {
 
 // Places debout : alignees du cote bar, face au comptoir.
 const COFFEE_SPOTS = [-1.05, -.35, .35, 1.05].map((dz) => ({
-  pos: new V3(13.3, 0, COFFEE.z + dz), kind: 'coffee', busy: false,
-  face: Math.atan2(-(COFFEE.x - 13.3), dz), // tourne vers le mange-debout
+  pos: new V3(wallR(1.7), 0, COFFEE.z + dz), kind: 'coffee', busy: false,
+  face: Math.atan2(-(COFFEE.x - wallR(1.7)), dz), // tourne vers le mange-debout
 }));
 function claimSpot() { const s = COFFEE_SPOTS.find((k) => !k.busy); if (s) s.busy = true; return s; }
 
@@ -583,11 +666,21 @@ const COUCH_SPOTS = [-1.15, 0, 1.15].map((dx) => ({
 // Places debout : le troisieme lieu de repos. Sans lui, un employe de plus que de
 // places assises resterait plante a l'origine de la scene — au milieu de la piece.
 // Elles occupent la bande avant gauche, liberee par le salon qui est passe au centre.
-// Le creux au milieu de la rangee evite la plante posee en (-7.4, 10.6).
-const STAND_SPOTS = [-12.2, -10.8, -9.4, -8.0, -5.6, -4.2].map((x) => ({
-  pos: new V3(x, 0, 9.3), kind: 'stand', busy: false,
-  face: Math.atan2(x - LOUNGE_X, 9.3 - LOUNGE_Z), // tourne vers le salon, comme on discute
-}));
+// Le creux au milieu de la rangee evite la plante posee a x = -7,4.
+//
+// La rangee est engendree plutot qu'ecrite a la main : la bande s'est allongee avec
+// la piece, et une maison de vingt ilots peut compter bien plus d'employes que les
+// six places d'origine. Six places pour cinquante personnes, ce sont quarante-quatre
+// employes plantes a l'origine de la scene.
+const STAND_Z = wallF(1.7);
+const STAND_SPOTS = [];
+for (let x = wallL(2.8); x < LOUNGE_X - 3.6; x += 1.4) {
+  if (x > -8.4 && x < -5.2) continue; // la plante
+  STAND_SPOTS.push({
+    pos: new V3(x, 0, STAND_Z), kind: 'stand', busy: false,
+    face: Math.atan2(x - LOUNGE_X, STAND_Z - LOUNGE_Z), // tourne vers le salon, comme on discute
+  });
+}
 
 // Une place libre pour un employe desoeuvre. On evite de lui rendre l'occupation
 // qu'il vient de quitter, sinon il se rassoit exactement la ou il etait. Le canape
@@ -609,9 +702,9 @@ coffeeRug.receiveShadow = true; scene.add(coffeeRug);
 // Baie serveurs, dans l'angle du fond a droite. Trois armoires : seule celle du
 // milieu est branchee sur les donnees — une LED par commande shell encore en cours
 // (background_tasks des hooks). Les deux autres ne sont que du decor qui respire.
-const RACK_X = 13.2, RACK_Z = -10.25, RACK_LEDS = 8;
+const RACK_X = wallR(1.8), RACK_Z = wallB(.75), RACK_LEDS = 8;
 const rackLeds = [];
-for (const cx of [11.95, RACK_X, 14.45]) {
+for (const cx of [RACK_X - 1.25, RACK_X, RACK_X + 1.25]) {
   const live = cx === RACK_X;
   const body = box(1.15, 2.0, .85, 0x2a2420); body.position.set(cx, 1.0, RACK_Z); scene.add(body);
   const top = box(1.25, .08, .95, 0x3a322c); top.position.set(cx, 2.04, RACK_Z); scene.add(top);
@@ -661,15 +754,18 @@ function plant(x, z, s = 1) {
 // Les deux plantes de l'avant droit ont cede la place au coin cafe. Celle qui avait
 // repris l'angle du fond a droite laisse maintenant la place a la baie serveurs :
 // elle se cale entre les deux fenetres, seul pan de mur encore nu.
-plant(6.0, -10.3, 1.25); plant(-13.9, -9.6, 1); plant(-7.4, 10.6, .85);
+// Les deux plantes du fond se posent dans les angles, qui ont recule avec les murs ;
+// la troisieme reste a l'avant gauche, derriere les places debout.
+plant(wallR(17.0), wallB(1.7), 1.25); plant(wallL(2.1), wallB(1.4), 1);
+plant(-7.4, wallF(.4), .85);
 
 // Étagère et bouquins : du détail tiède sur le mur du fond
-const shelf = box(3.4, .12, .5, 0x6d4b33); shelf.position.set(-11.5, 1.75, -ROOM.d / 2 + .3); scene.add(shelf);
+const shelf = box(3.4, .12, .5, 0x6d4b33); shelf.position.set(-11.5, 1.75, wallB(.3)); scene.add(shelf);
 const BOOKS = [0xb5553f, 0xd2a35c, 0x5d8f56, 0x8a6fa3, 0xc97b5a, 0x6e8ca8];
 for (let i = 0; i < 11; i++) {
   const h = .3 + (i % 4) * .06;
   const b = box(.14, h, .34, BOOKS[i % BOOKS.length]);
-  b.position.set(-12.9 + i * .26, 1.81 + h / 2, -ROOM.d / 2 + .3); scene.add(b);
+  b.position.set(-12.9 + i * .26, 1.81 + h / 2, wallB(.3)); scene.add(b);
 }
 
 /* ---------- Mur de gauche : tableau blanc et modele de donnees ---------- */
@@ -782,7 +878,7 @@ function erdTexture() {
 // Accroche un panneau sur le mur de gauche. rotation.y = PI/2 : la face regarde
 // vers +x, donc vers la camera, et le texte se lit dans le bon sens.
 function wallBoard(z, w, h, tex, frameCol) {
-  const X = -ROOM.w / 2 + .06;
+  const X = wallL(.06);
   const frame = box(.07, h + .16, w + .16, frameCol);
   frame.position.set(X - .02, 2.25, z); scene.add(frame);
   const face = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
@@ -790,20 +886,24 @@ function wallBoard(z, w, h, tex, frameCol) {
   face.rotation.y = Math.PI / 2; face.position.set(X + .03, 2.25, z); scene.add(face);
   return face;
 }
-wallBoard(-4.2, 5.0, 1.9, whiteboardTexture(), 0xb9b2a6);
+// Le mur de gauche court maintenant sur toute la profondeur. On garde les deux
+// panneaux groupés vers l'avant, là où la caméra les lit : étalés sur 37 unités ils
+// auraient été deux timbres-poste sur une plaine.
+const BOARD_Z = -4.2;
+wallBoard(BOARD_Z, 5.0, 1.9, whiteboardTexture(), 0xb9b2a6);
 wallBoard(2.4, 4.0, 1.9, erdTexture(), 0x6d4b33);
 
 // Reglette a feutres sous le tableau : trois marqueurs et une brosse.
 const tray = box(.14, .07, 1.5, 0x8d867a, { metalness: .3, roughness: .6 });
-tray.position.set(-ROOM.w / 2 + .16, 1.24, -4.2); scene.add(tray);
+tray.position.set(wallL(.16), 1.24, BOARD_Z); scene.add(tray);
 for (const [dz, col] of [[-.5, 0x2f3640], [-.26, 0x2f6fb0], [-.02, 0xb03a2e]]) {
   const pen = new THREE.Mesh(new THREE.CylinderGeometry(.035, .035, .26, 8),
     new THREE.MeshStandardMaterial({ color: col, roughness: .5 }));
   pen.rotation.x = Math.PI / 2;
-  pen.position.set(-ROOM.w / 2 + .16, 1.3, -4.2 + dz); scene.add(pen);
+  pen.position.set(wallL(.16), 1.3, BOARD_Z + dz); scene.add(pen);
 }
 const eraser = box(.1, .12, .34, 0x3f3630);
-eraser.position.set(-ROOM.w / 2 + .16, 1.33, -3.8); scene.add(eraser);
+eraser.position.set(wallL(.16), 1.33, BOARD_Z + .4); scene.add(eraser);
 
 /* ---------- La vie de la piece : chat, vapeur, poussiere ---------- */
 // Rien ici ne dit quoi que ce soit sur les sessions. C'est du decor anime, et c'est
@@ -1098,9 +1198,199 @@ function makeDesk(parent, x, z) {
     },
   };
 }
+
+/* ---------- Navigation : A* sur une grille d'occupation ---------- */
+// La piece est decoupee en cases de 20 cm. Chaque meuble, cloison et bureau bloque
+// les cases que son emprise couvre, elargie de NAV.pad (le gabarit d'un personnage).
+// Les trajets sont cherches en A* sur 8 voisins, puis lisses par visibilite directe :
+// on marche en ligne droite tant que rien ne s'interpose, au lieu d'un escalier de
+// cases. Les ilots vont et viennent avec les sessions : la grille est reconstruite a
+// la demande, des que l'un d'eux apparait ou disparait (invalidateNav()).
+// L'origine de la grille, c'est le coin de la piece — et depuis que la piece ne
+// grandit que vers le fond, son centre n'est plus z = 0. `-ROOM.d / 2` decalerait
+// toute la grille de la moitie de ce qu'on a ajoute : les agents contourneraient des
+// meubles absents et traverseraient ceux qui sont la.
+const NAV = { cell: .2, pad: .22, x0: -ROOM.w / 2, z0: ROOM.back };
+NAV.cols = Math.round(ROOM.w / NAV.cell);
+NAV.rows = Math.round(ROOM.d / NAV.cell);
+let navGrid = null; // Uint8Array, 1 = bloque
+function invalidateNav() { navGrid = null; }
+
+// [centre x, centre z, largeur, profondeur, marge ?]
+const STATIC_OBSTACLES = [
+  [10.6, 9.6, 1.34, 2.74],                // comptoir et machine
+  [COFFEE.x, COFFEE.z, .9, 2.6],          // mange-debout
+  // Canape et table basse : marge mince. La voie qui les separe (z = 9,35) ne fait
+  // que 35 cm — c'est par elle qu'on gagne sa place. Une marge pleine la fermerait.
+  [LOUNGE_X, LOUNGE_Z, 3.9, 1.4, .05],
+  [LOUNGE_X, 9.85, 1.7, .7, .05],
+  [LOUNGE_X, TV_Z, 2.0, .52],             // televiseur et console
+  [RACK_X, RACK_Z, 3.65, .85],            // les trois armoires de la baie
+  [6.0, -10.3, .85, .85], [-13.9, -9.6, .68, .68], [-7.4, 10.6, .58, .58], // plantes
+];
+
+function buildNav() {
+  const { cols, rows, cell, x0, z0, pad } = NAV, g = new Uint8Array(cols * rows);
+  // Bloque toute case dont le CENTRE tombe dans le rectangle elargi.
+  const mark = (cx, cz, w, d, m = pad) => {
+    const i0 = Math.max(0, Math.ceil((cx - w / 2 - m - x0) / cell - .5));
+    const i1 = Math.min(cols - 1, Math.floor((cx + w / 2 + m - x0) / cell - .5));
+    const j0 = Math.max(0, Math.ceil((cz - d / 2 - m - z0) / cell - .5));
+    const j1 = Math.min(rows - 1, Math.floor((cz + d / 2 + m - z0) / cell - .5));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) g[j * cols + i] = 1;
+  };
+  // Bords de la piece : murs du fond et de gauche, et vide du cote camera.
+  const band = Math.ceil(pad / cell);
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++)
+    if (i < band || j < band || i >= cols - band || j >= rows - band) g[j * cols + i] = 1;
+  for (const o of STATIC_OBSTACLES) mark(...o);
+  for (const p of pods) {
+    const { x, z } = p.slot, open = z < 0 ? 1 : -1;
+    mark(x - 3.05, z, .1, 6.2); mark(x + 3.05, z, .1, 6.2); mark(x, z - 3.05 * open, 6.2, .1);
+    // Plateau du bureau ; l'assise est a +0,8 en z, donc le centre du plateau a -0,8.
+    for (const d of p.desks) mark(d.seat.x, d.seat.z - .8, 2.2, 1.1);
+  }
+  return g;
+}
+
+const navCell = (x, z) => {
+  const i = Math.min(NAV.cols - 1, Math.max(0, Math.floor((x - NAV.x0) / NAV.cell)));
+  const j = Math.min(NAV.rows - 1, Math.max(0, Math.floor((z - NAV.z0) / NAV.cell)));
+  return j * NAV.cols + i;
+};
+const navCenter = (k) => new V3(
+  NAV.x0 + (k % NAV.cols + .5) * NAV.cell, 0, NAV.z0 + (Math.floor(k / NAV.cols) + .5) * NAV.cell);
+
+// Case libre la plus proche (un siege, une place de canape sont dans un meuble).
+function nearestFree(k) {
+  const { cols, rows } = NAV, ci = k % cols, cj = Math.floor(k / cols);
+  for (let r = 1; r < 20; r++) {
+    let best = -1, bd = Infinity;
+    for (let j = cj - r; j <= cj + r; j++) for (let i = ci - r; i <= ci + r; i++) {
+      if (Math.max(Math.abs(i - ci), Math.abs(j - cj)) !== r) continue; // l'anneau seul
+      if (i < 0 || j < 0 || i >= cols || j >= rows || navGrid[j * cols + i]) continue;
+      const d = (i - ci) ** 2 + (j - cj) ** 2;
+      if (d < bd) { bd = d; best = j * cols + i; }
+    }
+    if (best >= 0) return best;
+  }
+  return -1;
+}
+
+// A* 8-connexe, heuristique octile. Pas de coupe d'angle : une diagonale exige que
+// ses deux cases orthogonales soient libres, sinon on raserait l'arete d'un bureau.
+function astar(s, e) {
+  const { cols, rows } = NAV, n = cols * rows, SQ2 = Math.SQRT2;
+  const gs = new Float32Array(n).fill(Infinity), from = new Int32Array(n).fill(-1);
+  const shut = new Uint8Array(n);
+  const ei = e % cols, ej = Math.floor(e / cols);
+  const h = (k) => {
+    const dx = Math.abs(k % cols - ei), dz = Math.abs(Math.floor(k / cols) - ej);
+    return Math.max(dx, dz) + (SQ2 - 1) * Math.min(dx, dz);
+  };
+  // Tas binaire minimal sur f = g + h.
+  const heap = [], fs = [];
+  const push = (k, f) => {
+    let i = heap.length; heap.push(k); fs.push(f);
+    while (i > 0) {
+      const p = (i - 1) >> 1; if (fs[p] <= f) break;
+      heap[i] = heap[p]; fs[i] = fs[p]; i = p;
+    }
+    heap[i] = k; fs[i] = f;
+  };
+  const pop = () => {
+    const top = heap[0], k = heap.pop(), f = fs.pop();
+    if (heap.length) {
+      let i = 0;
+      for (;;) {
+        let c = 2 * i + 1; if (c >= heap.length) break;
+        if (c + 1 < heap.length && fs[c + 1] < fs[c]) c++;
+        if (fs[c] >= f) break;
+        heap[i] = heap[c]; fs[i] = fs[c]; i = c;
+      }
+      heap[i] = k; fs[i] = f;
+    }
+    return top;
+  };
+  gs[s] = 0; push(s, h(s));
+  while (heap.length) {
+    const k = pop();
+    if (k === e) {
+      const out = [];
+      for (let c = e; c !== -1; c = from[c]) out.push(c);
+      return out.reverse();
+    }
+    if (shut[k]) continue;
+    shut[k] = 1;
+    const ci = k % cols, cj = Math.floor(k / cols);
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dz) continue;
+      const i = ci + dx, j = cj + dz;
+      if (i < 0 || j < 0 || i >= cols || j >= rows) continue;
+      const m = j * cols + i;
+      if (navGrid[m] || shut[m]) continue;
+      if (dx && dz && (navGrid[cj * cols + i] || navGrid[j * cols + ci])) continue;
+      const ng = gs[k] + (dx && dz ? SQ2 : 1);
+      if (ng < gs[m]) { gs[m] = ng; from[m] = k; push(m, ng + h(m)); }
+    }
+  }
+  return null;
+}
+
+// Segment entierement en cases libres ? Echantillonne tous les demi-pas de grille.
+function navClear(a, b) {
+  const dx = b.x - a.x, dz = b.z - a.z;
+  const n = Math.ceil(Math.hypot(dx, dz) / (NAV.cell * .5));
+  for (let s = 0; s <= n; s++) {
+    if (navGrid[navCell(a.x + dx * s / n, a.z + dz * s / n)]) return false;
+  }
+  return true;
+}
+
+// Liste des points a rejoindre, depuis `from` (exclu) jusqu'a `to` (inclus). Si le
+// depart ou l'arrivee est dans un meuble (un siege), on en sort ou on y entre par la
+// case libre la plus proche, en ligne droite : c'est le geste de s'asseoir.
+function findPath(from, to) {
+  if (!navGrid) navGrid = buildNav();
+  const s = navCell(from.x, from.z), e = navCell(to.x, to.z);
+  const sIn = !navGrid[s], eIn = !navGrid[e];
+  const sf = sIn ? s : nearestFree(s), ef = eIn ? e : nearestFree(e);
+  const cells = sf >= 0 && ef >= 0 ? astar(sf, ef) : null;
+  if (!cells) return [to.clone()]; // aucun passage : on y va tout droit, comme avant
+  const pts = cells.map(navCenter);
+  // Extremites exactes a la place des centres de case quand elles sont libres.
+  pts[0] = sIn ? from.clone() : pts[0];
+  pts[pts.length - 1] = eIn ? to.clone() : pts[pts.length - 1];
+  // Lissage par visibilite : de chaque point, on saute au plus lointain visible.
+  const out = [pts[0]];
+  for (let i = 0; i < pts.length - 1;) {
+    let j = pts.length - 1;
+    while (j > i + 1 && !navClear(pts[i], pts[j])) j--;
+    out.push(pts[j]); i = j;
+  }
+  if (!sIn) out.unshift(from.clone());
+  if (!eIn) out.push(to.clone());
+  return out.slice(1);
+}
+
 /* ---------- Îlots : un par session, nommé d'après le projet ---------- */
-// Grille d'emplacements — 3 colonnes × 2 rangées = 6 sessions simultanées visibles.
-const POD_X = [-6, 1.5, 9], POD_Z = [-4.5, 4.5];
+// Grille d'emplacements — 5 colonnes × 4 rangées = 20 sessions simultanées visibles.
+//
+// Les rangées vont par PAIRES. Chaque paire encadre une allée, et les deux rangées
+// s'ouvrent dessus ; entre deux paires, les îlots se tournent le dos. C'est ce qui
+// permet d'ajouter des rangées sans ajouter des allées : quatre rangées, deux allées.
+// L'écart de 9 à l'intérieur d'une paire laisse la place d'y marcher (6,1 d'îlot +
+// 2,9 d'allée) ; l'écart de 7,5 entre deux paires n'est qu'un interstice, comme
+// entre deux colonnes.
+//
+// L'ordre compte : la rangée la plus proche de la caméra vient en premier, donc une
+// maison peu chargée s'installe au premier plan plutôt qu'au fond.
+const POD_X = [-13.5, -6, 1.5, 9, 16.5];
+const POD_Z = [4.5, -4.5, -12, -21];
+// Les allées, et la façon de trouver la sienne. Tout déplacement passe par une allée
+// puis par le couloir de gauche, qui les relie toutes.
+const AISLES = [0, -16.5];
+const aisleFor = (z) => AISLES.reduce((a, b) => (Math.abs(b - z) < Math.abs(a - z) ? b : a));
 // Bureaux d'un ilot. L'ordre d'attribution est recalcule par ilot (cote ouvert
 // d'abord), si bien que le lead s'assoit toujours face a l'allee.
 const POD_SEATS = [[-1.6, 1.6], [-1.6, -1.6], [1.6, -1.6], [1.6, 1.6]];
@@ -1111,6 +1401,15 @@ const TINTS = [0xc9795b, 0x7f9d6f, 0x6e8ca8, 0xd2a35c, 0xa97fa0, 0x5fa39b];
 
 const podSlots = [];
 for (const z of POD_Z) for (const x of POD_X) podSlots.push({ x, z, count: 0 });
+// Ordre de remplissage : depuis le milieu de la première rangée, vers l'extérieur.
+// Une maison à trois sessions doit occuper trois emplacements voisins, pas les trois
+// coins d'un plateau de vingt — la caméra cadre ce qui est occupé, et trois îlots
+// aux extrémités la forcent à tout dézoomer pour ne montrer que du parquet.
+// Le z pèse un peu plus que le x : on préfère élargir la rangée de devant avant
+// d'aller au fond, parce que c'est celle que la caméra voit le mieux.
+const FILL_X = POD_X[(POD_X.length - 1) >> 1], FILL_Z = POD_Z[0];
+const fillRank = (s) => Math.hypot(s.x - FILL_X, (s.z - FILL_Z) * 1.35);
+podSlots.sort((a, b) => fillRank(a) - fillRank(b));
 
 // Descente de lit de l'îlot : c'est elle qui porte le nom du projet. Au sol plutôt
 // qu'en panneau suspendu — un panneau en l'air masquait les bureaux du fond et
@@ -1143,6 +1442,24 @@ function matTexture(title, sub, tint) {
 }
 
 const pods = new Set();
+
+// UNE lumiere de gyrophare pour toute la piece, qui se pose sur l'ilot qui appelle.
+// Une lumiere invisible ne coute rien : three.js ignore les objets non visibles au
+// moment de collecter les lumieres de la scene. C'est ce qui permet de la garder
+// allumee en permanence sans la payer quand personne n'appelle.
+// Deux appels simultanes : la sphere emissive clignote sur chacun des deux ilots,
+// seule la lumiere va au premier. C'est la bonne economie — c'est la sphere qu'on
+// regarde, la lumiere ne fait que chauffer le plafond autour.
+const beaconLight = new THREE.PointLight(0xffffff, 0, 9, 2);
+beaconLight.visible = false; scene.add(beaconLight);
+let beaconPod = null;
+function placeBeaconLight() {
+  beaconPod = [...pods].find((p) => p.beaconColor != null) ?? null;
+  beaconLight.visible = beaconPod != null;
+  if (!beaconPod) { beaconLight.intensity = 0; return; }
+  beaconLight.color.setHex(beaconPod.beaconColor);
+  beaconLight.position.set(beaconPod.slot.x, 5.1, beaconPod.slot.z);
+}
 
 class Pod {
   constructor(title, sub, tint) {
@@ -1183,7 +1500,7 @@ class Pod {
 
     // Cloisons : bois en bas, verre dépoli en haut. Trois côtés ; l'îlot s'ouvre sur
     // l'allée centrale, par où tout le monde entre et sort.
-    const open = z < 0 ? 1 : -1; // sens de l'ouverture (vers z = 0)
+    const open = aisleFor(z) > z ? 1 : -1; // sens de l'ouverture : vers SON allée
     const panel = (px, pz, w, d) => {
       const base = box(w, .78, d, 0x6d4b33); base.position.set(px, .39, pz); this.g.add(base);
       const glass = new THREE.Mesh(new THREE.BoxGeometry(w, .72, d),
@@ -1211,8 +1528,11 @@ class Pod {
     this.beacon = new THREE.Mesh(new THREE.SphereGeometry(.26, 14, 12),
       new THREE.MeshStandardMaterial({ color: 0x3a2f27, emissive: 0x000000 }));
     this.beacon.position.set(x, 5.25, z); this.beacon.visible = false; this.g.add(this.beacon);
-    this.beaconLight = new THREE.PointLight(0xffffff, 0, 9, 2);
-    this.beaconLight.position.set(x, 5.1, z); this.g.add(this.beaconLight);
+    // Pas de lumiere propre au gyrophare : il y en a UNE pour toute la piece, et
+    // elle se deplace sur l'ilot qui appelle (voir beaconLight plus bas). A vingt
+    // emplacements, une lumiere ponctuelle par ilot pour le gyrophare plus une pour
+    // la suspension faisait quarante lumieres dynamiques dans la scene — chaque
+    // fragment du decor les parcourait toutes, y compris les trente-neuf eteintes.
 
     // Point d'entrée dans l'allée, devant l'ouverture
     this.gate = new V3(x, 0, z + 3.5 * open);
@@ -1221,7 +1541,7 @@ class Pod {
     // les deux rangées — sinon il tourne le dos au spectateur dans l'une des deux.
     const seats = [...POD_SEATS].sort((a, b) => (b[1] - a[1]) * open);
     this.desks = seats.map(([dx, dz]) => makeDesk(this.g, x + dx, z + dz));
-    pods.add(this); framePods();
+    pods.add(this); invalidateNav(); framePods();
   }
   // Au-delà de 4 agents l'îlot est plein : on double sur le dernier bureau plutôt
   // que de déborder sur un autre projet. D'où le comptage d'occupants.
@@ -1232,10 +1552,8 @@ class Pod {
   setBeacon(color) {
     this.beaconColor = color ?? null;
     this.beacon.visible = color != null;
-    if (color != null) {
-      this.beacon.material.emissive.setHex(color);
-      this.beaconLight.color.setHex(color);
-    } else this.beaconLight.intensity = 0;
+    if (color != null) this.beacon.material.emissive.setHex(color);
+    placeBeaconLight();
   }
   releaseDesk(d) {
     if ((d.occupants = (d.occupants || 1) - 1) <= 0) { d.busy = false; d.setScreen(null); }
@@ -1252,18 +1570,41 @@ class Pod {
   dispose() {
     scene.remove(this.g);
     this.g.traverse((o) => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); });
-    this.slot.count--; pods.delete(this); framePods();
+    this.slot.count--; pods.delete(this); invalidateNav(); framePods();
+    // L'ilot demonte pouvait porter la lumiere du gyrophare : elle doit retrouver
+    // un porteur, ou s'eteindre.
+    if (beaconPod === this) placeBeaconLight();
   }
 }
 
 // Recentre et redimensionne la vue sur les îlots actifs.
 function framePods() {
   if (focused) return; // un ilot est epingle : on ne recadre pas dans son dos
-  let cx = 0, cz = 0;
-  for (const p of pods) { cx += p.slot.x; cz += p.slot.z; }
-  const n = pods.size;
-  camTarget.set(n ? cx / n : 0, 0, n ? cz / n : 0);
-  camSpan = n <= 1 ? 8.5 : n <= 2 ? 13 : n <= 4 ? 17 : 21;
+  if (!pods.size) { camTarget.set(0, 0, 0); camSpan = 8.5; resize(); return; }
+  // Cadrage sur la boite englobante plutot que sur la moyenne : avec vingt
+  // emplacements, deux ilots aux coins opposes ont la meme moyenne que deux ilots
+  // cote a cote, et l'un des deux cadrages serait faux. L'echelle d'avant etait une
+  // echelle par paliers, qui n'allait pas au-dela de six.
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const p of pods) {
+    const s = p.slot;
+    x0 = Math.min(x0, s.x); x1 = Math.max(x1, s.x);
+    z0 = Math.min(z0, s.z); z1 = Math.max(z1, s.z);
+  }
+  // En vue isometrique, x et z poussent tous les deux l'image vers le haut : c'est
+  // leur SOMME qui decide de la hauteur a l'ecran, pas le plus grand des deux. On
+  // ajoute la taille d'un ilot (6,1 × 6,3) a l'etendue des CENTRES, puis on cale la
+  // droite sur les deux cas connus : un ilot seul tenait a 8,5, six a 21.
+  camSpan = Math.max(8.5, .52 * ((x1 - x0 + 6.1) + (z1 - z0 + 6.3)) + 2.05);
+  // Le cadre ne doit pas deborder des murs, sinon la camera regarde le vide a cote
+  // de la piece au lieu de la piece — ce qui arrive des que les ilots occupes ne
+  // sont pas au centre d'une piece devenue bien plus grande qu'eux. Et quand le
+  // cadre est plus grand que la piece, il n'y a plus rien a cadrer qu'elle.
+  const m = camSpan * .62;
+  const fit = (v, lo, hi, mid) => (lo > hi ? mid : Math.min(hi, Math.max(lo, v)));
+  camTarget.set(
+    fit((x0 + x1) / 2, -ROOM.w / 2 + m, ROOM.w / 2 - m, 0), 0,
+    fit((z0 + z1) / 2, ROOM.back + m, ROOM.front - m, ROOM.cz));
   resize();
 }
 
@@ -1428,14 +1769,28 @@ const MOODS = {
   game:   { brow: .16, lift: .008, smile: .62, open: .22, narrow: .00 },
   idle:   { brow: .00, lift: .000, smile: .30, open: .00, narrow: .10 },
   walk:   { brow: .00, lift: .000, smile: .16, open: .00, narrow: .06 },
+  fall:   { brow: .40, lift: .020, smile: -.30, open: .55, narrow: .00 },
 };
 
-const DOOR = new V3(-14.3, 0, 7);
-const CORRIDOR_X = -13.0; // couloir le long du mur de gauche, jusqu'a la porte
-const AISLE_Z = 0;        // allee centrale : seule voie traversant la piece sans cloison
+// Bousculade : un agent qui marche renverse celui qu'il percute. Rayon de contact a
+// peu pres la largeur d'epaules ; durees de la chute, du temps au sol, du relevement.
+const BUMP_R = .42, FALL_SLIDE = .35, FALL_TIP = .45, FALL_LIE = 1.8, FALL_UP = .8;
+
+// Juste devant la porte, qui est elle-meme posee sur le mur de gauche. A ancrer au
+// mur : fixe, ce point se retrouvait au milieu du parquet des que la piece
+// s'agrandissait — et meme a l'interieur d'un ilot, d'ou des arrivees qui
+// traversaient les cloisons de verre.
+const DOOR = new V3(wallL(.7), 0, wallF(4));
 const labelsEl = document.getElementById('labels');
 const agents = new Set();
 const tmp = new V3();
+
+// Les trois etats que porte la pastille de la bulle. `walk` compte comme du travail :
+// un agent qui rejoint son bureau est deja sur le dossier, et le faire clignoter en
+// « repos » pendant sa traversee ne dirait rien de vrai.
+const WORK_ACTS = new Set(['read', 'type', 'term', 'web', 'plan', 'think', 'walk']);
+const STATUS_ICON = { work: '💼', ask: '❓', rest: '☕' };
+const STATUS_LABEL = { work: 'au travail', ask: 'attend ta réponse', rest: 'au repos' };
 
 class Agent {
   constructor(id, { name, kind, task, pod, seated, variant = 0 }) {
@@ -1467,56 +1822,156 @@ class Agent {
       (pod ? '#' + pod.tint.toString(16).padStart(6, '0') : 'rgba(185,168,148,.45)');
     const b = document.createElement('b'); b.textContent = (kind === 'main' ? '🧠 ' : '🤖 ') + name;
     this.t = document.createElement('span'); this.t.className = 't';
+    this.stEl = document.createElement('i'); this.stEl.className = 'st';
     this.sayEl = document.createElement('span'); this.sayEl.className = 'say'; this.sayEl.hidden = true;
-    this.el.append(b, this.t, this.sayEl); labelsEl.appendChild(this.el);
+    this.el.append(this.stEl, b, this.t, this.sayEl); labelsEl.appendChild(this.el);
     this.set(kind === 'main' ? 'idle' : 'walk', kind === 'main' ? '☕ prêt' : '🚶 arrive…');
     agents.add(this); pod?.members.add(this);
     this.gen = 0; // jeton d'affectation : invalide les minuteries d'une mission passee
   }
-  // Depuis les cloisons, un îlot ne s'aborde que par son ouverture sur l'allée
-  // centrale : couloir de gauche → allée → portillon → bureau. Jamais en diagonale,
-  // sinon les agents traversent le verre.
-  // Ces trajets sont calculés depuis la position réelle, pas depuis le bureau : un
-  // agent congédié en pleine arrivée ne doit pas repartir en diagonale à travers le verre.
-  insidePod() {
-    if (!this.pod) return false; // employe sans affectation : il n'est dans aucun ilot
-    const p = this.c.g.position, s = this.pod.slot;
-    return Math.abs(p.x - s.x) < 3.05 && Math.abs(p.z - s.z) < 3.05;
+  // Trajet vers `goal`, cherche en A* sur la grille (voir findPath()). Les cloisons,
+  // bureaux et meubles sont des obstacles : plus besoin de couloirs imposes, chacun
+  // prend le chemin le plus court qui ne traverse ni le verre ni un plateau.
+  // `via` : derniere approche faite a la main, la ou la grille est trop grossiere —
+  // on gagne le canape par la voie de devant, puis on s'y assoit en reculant.
+  // On repart par ou l'on est arrive : quitter le canape, c'est d'abord se relever
+  // vers cette voie, pas l'enjamber par le dossier.
+  routeTo(goal, via = null) {
+    const here = this.c.g.position, b = this.berth, head = [];
+    let from = here;
+    if (b && Math.hypot(here.x - b.pos.x, here.z - b.pos.z) < .05) { head.push(b.via.clone()); from = b.via; }
+    const path = [...head, ...findPath(from, via ?? goal)];
+    if (via) path.push(goal.clone());
+    this.berth = via ? { pos: goal.clone(), via: via.clone() } : null;
+    return path;
   }
-  // Rejoindre l'allée centrale depuis là où l'on se trouve. Trois cas seulement :
-  // dans un îlot (on sort par le portillon), dans la baie café (on redescend le long
-  // du bord droit), ou dans le couloir de gauche.
-  fromHere() {
-    const p = this.c.g.position;
-    if (this.insidePod()) return [new V3(p.x, 0, this.pod.gate.z), new V3(p.x, 0, AISLE_Z)];
-    // Le test porte aussi sur x : le salon est a l'avant GAUCHE et depasse lui aussi
-    // CAFE_Z. Sans ca, un employe quittant le canape traverserait toute la piece.
-    if (p.z >= CAFE_Z && p.x > 8) return [new V3(CAFE_LANE_X, 0, p.z), new V3(CAFE_LANE_X, 0, AISLE_Z)];
-    return [new V3(CORRIDOR_X, 0, p.z), new V3(CORRIDOR_X, 0, AISLE_Z)];
-  }
-  toDesk() {
-    const s = this.desk.seat;
-    return [...this.fromHere(), new V3(s.x, 0, AISLE_Z),
-      new V3(s.x, 0, this.pod.gate.z), s.clone()];
-  }
+  toDesk() { return this.routeTo(this.desk.seat); }
   // Pas de trajet vers la sortie : depuis que la maison garde ses gens, personne ne
   // repart. La porte ne sert plus qu'aux arrivées.
-  // On descend la voie d'acces jusqu'au niveau de la place, puis on s'y range : le
-  // dernier pas est court et ne traverse ni le bar ni le mange-debout.
   toSpot(spot) {
-    // Le salon et ses abords se gagnent par le couloir de gauche, le bar par la
-    // voie de droite. Ce sont les deux seules facons de descendre sans traverser.
-    const lane = spot.kind === 'coffee' ? CAFE_LANE_X : CORRIDOR_X;
-    // Le canape s'aborde par la bande degagee devant lui, puis on s'assoit en
-    // reculant : rejoindre la place en longeant l'assise traverserait l'accoudoir.
-    if (spot.kind === 'couch') {
-      return [...this.fromHere(), new V3(lane, 0, AISLE_Z), new V3(lane, 0, COUCH_LANE_Z),
-        new V3(spot.pos.x, 0, COUCH_LANE_Z), spot.pos.clone()];
-    }
-    return [...this.fromHere(), new V3(lane, 0, AISLE_Z),
-      new V3(lane, 0, spot.pos.z), spot.pos.clone()];
+    return this.routeTo(spot.pos, spot.kind === 'couch' ? new V3(spot.pos.x, 0, COUCH_LANE_Z) : null);
   }
-  set(act, text) { this.act = act; this.t.textContent = text; this.el.dataset.act = act; }
+  set(act, text) {
+    // Au sol, on ne change pas d'etiquette : ce qu'on lui demande (une mission, une
+    // pause) est mis de cote et s'affichera quand il sera releve.
+    if (this.fall && act !== 'fall') { this.fall.act = act; this.fall.text = text; return; }
+    this.act = act; this.t.textContent = text; this.el.dataset.act = act;
+    this.refreshStatus();
+  }
+  // Trois etats, et trois seulement : il travaille, il attend une reponse de toi, il
+  // se repose. C'est tout ce qu'on cherche a voir d'un poste qui n'est pas le sien —
+  // et le seul niveau de detail qui reste lisible a vingt ilots. Un agent a terre
+  // n'est ni l'un ni l'autre : il compte comme au repos, ce qu'il est.
+  refreshStatus() {
+    const st = (this.session?.alert && this.kind === 'main') ? 'ask'
+      : WORK_ACTS.has(this.act) ? 'work' : 'rest';
+    if (st === this.st) return;
+    this.st = st;
+    this.el.dataset.st = st;
+    this.stEl.textContent = STATUS_ICON[st];
+    this.stEl.title = STATUS_LABEL[st];
+  }
+  // Seuls ceux qui tiennent debout tombent : on ne renverse pas quelqu'un assis a son
+  // bureau ou cale dans le canape. Un agent tout juste releve a quelques secondes de
+  // repit, sinon celui qui le suit le refait tomber aussitot.
+  canFall(t) {
+    if (this.fall || t < (this.immuneUntil ?? 0)) return false;
+    if (this.state === 'work' && !this.path.length) return false;
+    if (this.state === 'leisure' && this.spot?.kind === 'couch') return false;
+    return true;
+  }
+  // Appele en marchant, avec le pas qu'on vient de faire : quiconque est devant soi,
+  // a portee d'epaule, passe par terre.
+  bump(hx, hz, t) {
+    const p = this.c.g.position, hl = Math.hypot(hx, hz);
+    if (hl < 1e-6) return;
+    for (const o of agents) {
+      if (o === this || !o.canFall(t)) continue;
+      const q = o.c.g.position, dx = q.x - p.x, dz = q.z - p.z, dist = Math.hypot(dx, dz);
+      // Pile au meme point (deux arrivants poses ensemble sur la porte) : aucun sens
+      // de poussee, on ne renverse personne.
+      if (dist < .1 || dist > BUMP_R) continue;
+      if ((dx * hx + dz * hz) / (dist * hl) < .5) continue; // il faut l'avoir devant soi
+      o.knockDown(this, dx / dist, dz / dist, t);
+    }
+  }
+  // Renverse par `by`, pousse dans la direction (ux, uz). Il se tourne vers celui qui
+  // le percute et part a la renverse : le dos vers le sol, les pieds vers le fautif.
+  // `by` peut manquer (chute declenchee depuis le menu Actions) ; `land` impose le
+  // point de chute quand la glissade par defaut n'a pas de sens (depuis le canape).
+  knockDown(by, ux, uz, t, land = null) {
+    const from = this.c.g.position.clone(), to = land ? land.clone() : from.clone();
+    if (!land) {
+      to.x += ux * FALL_SLIDE; to.z += uz * FALL_SLIDE;
+      if (navGrid && !navClear(from, to)) to.copy(from); // pas de glissade dans un meuble
+    }
+    const act = this.act, text = this.t.textContent; // a remettre une fois releve
+    // Une tasse a la main ? Elle part en l'air, et le cafe finit par terre.
+    const cup = this.c.mug.visible && !this.cupless;
+    const why = by ? 'renversé par ' + by.name : 'patatras !';
+    this.set('fall', cup ? '💥☕ ' + why + ', café par terre' : '💥 ' + why);
+    this.fall = { t0: t, from, to, yaw: Math.atan2(ux, uz), act, text };
+    if (cup) { this.cupless = true; spillCup(from, ux, uz); }
+    thud();
+  }
+  // Chute sans fautif (menu Actions). On tombe dans une direction ou l'on a la place
+  // de s'allonger ; du canape, on glisse de l'assise vers la voie de devant et l'on
+  // s'etale le long de celle-ci, plutot que sur la table basse.
+  topple(t) {
+    if (this.fall) return;
+    if (!navGrid) navGrid = buildNav();
+    const p = this.c.g.position;
+    if (this.state === 'leisure' && this.spot?.kind === 'couch') {
+      const sx = Math.sign(this.spot.pos.x - LOUNGE_X) || (Math.random() < .5 ? -1 : 1);
+      this.knockDown(null, sx, 0, t, new V3(p.x + sx * FALL_SLIDE, 0, COUCH_LANE_Z));
+      return;
+    }
+    for (let k = 0; k < 16; k++) {
+      const a = Math.random() * Math.PI * 2, ux = Math.sin(a), uz = Math.cos(a);
+      if (navClear(p, new V3(p.x + ux * 1.6, 0, p.z + uz * 1.6))) { this.knockDown(null, ux, uz, t); return; }
+    }
+    this.knockDown(null, 0, 1, t, p); // coince de partout : il s'effondre sur place
+  }
+  // Chute, temps au sol, relevement. On pivote tout le personnage autour de ses pieds
+  // (origine du groupe) : en ordre YXZ, rotation.x bascule dans le repere du corps,
+  // apres le cap.
+  updateFall(t) {
+    const c = this.c, g = c.g, f = this.fall, e = t - f.t0;
+    g.rotation.order = 'YXZ'; g.rotation.y = f.yaw;
+    c.head.rotation.set(0, 0, 0); c.torso.position.y = .65; c.mug.visible = false;
+    if (e < FALL_TIP) {
+      const p = e / FALL_TIP;
+      g.position.lerpVectors(f.from, f.to, Math.min(1, p * 1.4));
+      g.rotation.x = p * p * Math.PI / 2; // ca accelere, comme toute chute
+      c.armL.rotation.x = c.armR.rotation.x = 2.6 + .4 * Math.sin(e * 30); // les bras battent
+      c.legL.rotation.x = .5 * p; c.legR.rotation.x = .2 * p;
+    } else if (e < FALL_TIP + FALL_LIE) {
+      const l = e - FALL_TIP;
+      g.position.copy(f.to);
+      g.position.y = .16;                                    // le dos sur le parquet, pas dedans
+      g.rotation.x = Math.PI / 2 - .14 * Math.abs(Math.sin(l * 9)) * Math.exp(-l * 4); // rebond
+      c.armL.rotation.x = c.armR.rotation.x = 0;
+      c.armL.rotation.z = -1.2; c.armR.rotation.z = 1.2;     // bras en croix
+      c.legL.rotation.x = .35; c.legR.rotation.x = .1;
+      c.head.rotation.y = .35 * Math.sin(l * 4);             // sonne, il secoue la tete
+    } else if (e < FALL_TIP + FALL_LIE + FALL_UP) {
+      const p = (e - FALL_TIP - FALL_LIE) / FALL_UP, k = 1 - ease(p);
+      g.position.copy(f.to); g.position.y = .16 * k;
+      g.rotation.x = k * Math.PI / 2;
+      c.armL.rotation.z = -1.2 * k; c.armR.rotation.z = 1.2 * k;
+      c.armL.rotation.x = c.armR.rotation.x = .9 * (1 - k); // il s'appuie pour se relever
+      c.legL.rotation.x = c.legR.rotation.x = .35 * k;
+    } else {
+      g.position.copy(f.to); g.position.y = 0; g.rotation.x = 0;
+      c.armL.rotation.z = c.armR.rotation.z = 0;
+      c.legL.rotation.x = c.legR.rotation.x = 0;
+      this.fall = null;
+      this.immuneUntil = t + 4;
+      this.set(f.act, f.text);
+      // Il revient a l'endroit d'ou on l'a pousse, puis reprend ce qu'il faisait.
+      if (Math.hypot(f.from.x - f.to.x, f.from.z - f.to.z) > .01) this.path.unshift(f.from.clone());
+    }
+  }
   // Dernier mot de l'agent (last_assistant_message), affiché quelques secondes.
   say(msg) {
     const txt = trunc(String(msg ?? '').replace(/[#*`>_]/g, ''), 150);
@@ -1578,7 +2033,7 @@ class Agent {
   goIdle() {
     this.gen++;
     const spot = claimLeisure(this.spot?.kind);
-    // Trajet calcule avant de lacher l'ilot : fromHere() part de la position reelle.
+    // Trajet calcule avant de lacher l'ilot : il part de la position reelle.
     const path = spot ? this.toSpot(spot) : null;
     this.freeDesk();
     this.freeSpot();
@@ -1633,10 +2088,12 @@ class Agent {
   update(dt, t) {
     const c = this.c, g = c.g, ph = hash(this.id) % 10;
     this.face(t);
+    if (this.fall) { this.updateFall(t); return; }
     if (this.path.length) {
       const tgt = this.path[0], d = tgt.clone().sub(g.position), dist = d.length(), step = 3.2 * dt;
       if (dist <= step) { g.position.copy(tgt); this.path.shift(); }
       else { g.position.addScaledVector(d, step / dist); g.rotation.y = Math.atan2(-d.x, -d.z); }
+      this.bump(d.x, d.z, t);
       const sw = Math.sin(t * 12) * .6;
       c.legL.rotation.x = sw; c.legR.rotation.x = -sw;
       c.armL.rotation.x = -sw * .8; c.armR.rotation.x = sw * .8;
@@ -1649,6 +2106,7 @@ class Agent {
           if (this.act === 'walk') this.set('think', this.task ? '💭 ' + trunc(this.task, 34) : '💭 prêt');
         } else if (this.state === 'tocoffee') {
           this.state = 'coffee';
+          this.cupless = false; // tasse neuve
           this.coffeeUntil = t + COFFEE_SEC;
           this.faceAngle = Math.atan2(-(COFFEE.x - g.position.x), -(COFFEE.z - g.position.z));
           this.set('coffee', '☕ pause café');
@@ -1656,6 +2114,7 @@ class Agent {
           // Arrive a sa place de repos. On ne fixe pas de fin : l'employe changera
           // simplement d'occupation au bout d'un moment, ou repartira sur un dossier.
           this.state = 'leisure';
+          this.cupless = false; // tasse neuve
           this.idleUntil = t + 45 + (hash(this.id) % 60);
           this.faceAngle = this.spot.face;
           this.set(...LEISURE_ACT[this.spot.kind]);
@@ -1679,7 +2138,8 @@ class Agent {
     g.rotation.y = resting ? this.faceAngle : 0;
     c.legL.rotation.x = c.legR.rotation.x = standing ? 0 : Math.PI / 2;
     c.torso.position.y = .65; c.head.rotation.set(0, 0, 0);
-    c.mug.visible = this.state === 'coffee' || this.spot?.kind === 'coffee';
+    // Apres une chute, plus de tasse jusqu'a la prochaine place au bar.
+    c.mug.visible = (this.state === 'coffee' || this.spot?.kind === 'coffee') && !this.cupless;
     c.pad.visible = onCouch;
     const a = this.act;
     if (a === 'type' || a === 'term' || a === 'plan') {
@@ -1741,6 +2201,16 @@ const LABEL_GAP = 4;
 function layoutLabels() {
   const list = [];
   for (const a of agents) { a.projectLabel(); list.push(a); }
+  // En mode pastille, on ne désempile pas. Le désempilement existe pour des étiquettes
+  // de texte, qui deviennent illisibles en se recouvrant ; une pastille, elle, reste
+  // lisible sous une autre, alors qu'une pastille descendue de deux cents pixels sous
+  // son personnage ne désigne plus personne. À pleine charge, la cascade partait même
+  // hors de l'écran. Accessoirement, on évite quarante lectures de `offsetWidth` par
+  // image, qui forcent chacune un recalcul de mise en page.
+  if (labelDensity === 'pastille') {
+    for (const a of list) { a.el.style.left = a.lx + 'px'; a.el.style.top = a.ly + 'px'; }
+    return;
+  }
   for (const a of list) { a.lw = a.el.offsetWidth || 120; a.lh = a.el.offsetHeight || 34; }
   list.sort((p, q) => p.ly - q.ly);
   const placed = [];
@@ -1872,9 +2342,12 @@ function handle(ev) {
   if (!s) {
     if (evn === 'SessionEnd') return;
     const project = uniqueName(projectName(ev.cwd));
-    const pod = new Pod(project, sid.slice(0, 8), TINTS[podCount++ % TINTS.length]);
+    // Sous le nom du projet : le poste en mode flotte, l'identifiant de session en
+    // local. Sur un plateau qui mélange plusieurs machines, savoir CHEZ QUI se passe
+    // un dossier vaut mieux que huit caractères d'UUID.
+    const pod = new Pod(project, ev.machine || sid.slice(0, 8), TINTS[podCount++ % TINTS.length]);
     s = {
-      sid, cwd: ev.cwd || '', project, pod, subs: [],
+      sid, cwd: ev.cwd || '', project, pod, subs: [], machine: ev.machine || '',
       main: new Agent(sid, { name: project, kind: 'main', pod }),
       startedAt: Date.now(), tools: 0, slowest: null, lastTool: '', alert: null,
       bg: [], effort: ev.effort, mode: ev.permission_mode,
@@ -1900,6 +2373,9 @@ function handle(ev) {
     case 'SessionStart': s.main.set('idle', '☕ en poste'); line = 'session démarrée'; break;
     case 'UserPromptSubmit':
       if (isCoffeeCmd(ev.prompt)) { s.main.toCoffee(); line = 'part en pause café'; break; }
+      // En flotte le prompt n'a pas quitté le poste : on sait qu'une consigne est
+      // tombée, pas laquelle. C'est tout l'objet de la pièce.
+      if (ev.fleet) { s.main.set('think', ev.label || '💭 nouvelle consigne'); line = 'nouvelle consigne'; break; }
       s.main.set('think', '💭 ' + trunc(ev.prompt, 40)); line = '« ' + trunc(ev.prompt, 60) + ' »'; break;
     case 'PreToolUse': {
       const ti = ev.tool_input || {};
@@ -1911,19 +2387,25 @@ function handle(ev) {
         let sub = idleStaff(type);
         if (sub) {
           sub.assignTo(s, task, !!ev._replay);
-          line = 'rappelle ' + type + ' : ' + trunc(ti.description, 40);
+          // Pas de description en flotte : elle est restée sur le poste.
+          line = 'rappelle ' + type + (task ? ' : ' + trunc(task, 40) : '');
         } else {
           const variant = staff.filter((a) => a.name === type).length;
           sub = new Agent(sid + ':' + (ev.tool_use_id || Math.random().toString(36).slice(2)),
             { name: type, kind: 'sub', task, pod: s.pod, seated: !!ev._replay, variant });
           sub.session = s; staff.push(sub);
-          line = 'embauche ' + type + ' : ' + trunc(ti.description, 40);
+          line = 'embauche ' + type + (task ? ' : ' + trunc(task, 40) : '');
         }
         sub.toolUseId = ev.tool_use_id; s.subs.push(sub);
         s.main.set('think', '👉 délègue à ' + type);
       } else {
         who = whoFor(s, ev);
-        const [act, label] = describe(ev.tool_name, ti); who.set(act, label); line = label;
+        // En mode flotte, le poste n'a envoyé que l'activité : le libellé arrive tout
+        // fait et volontairement muet. describe() ne sert qu'en local, où l'on a
+        // encore le détail sous la main.
+        const [act, label] = ev.act ? [ev.act, ev.label || '⚙️ travaille']
+          : describe(ev.tool_name, ti);
+        who.set(act, label); line = label;
         s.tools++; s.lastTool = ev.tool_name;
         who.startedTool = { name: ev.tool_name, at: Date.now() };
       }
@@ -2000,6 +2482,9 @@ function setAlert(s, kind, detail) {
   if (s.alert?.kind === kind) return;
   s.alert = kind ? { kind, detail, at: Date.now() } : null;
   s.pod.setBeacon(kind ? ALERTS[kind].color : null);
+  // La pastille du lead suit l'appel : c'est lui qui attend ta reponse, pas ses
+  // sous-agents, qui continuent de travailler pendant ce temps.
+  s.main.refreshStatus();
   if (kind && kind !== 'done') ping();
   refreshAttention();
 }
@@ -2047,6 +2532,62 @@ function ping() {
   } catch { /* pas d'audio disponible : tant pis, le visuel suffit */ }
 }
 
+// Cafe renverse : la tasse vole dans le sens de la poussee, retombe, et laisse une
+// flaque qui s'etale puis seche. Tasse et flaque vivent hors des agents (spills) :
+// elles survivent a celui qui les a semees.
+const SPILL_DRY = 18; // secondes avant que la flaque ait seche
+const spills = [];
+const spillCupMat = new THREE.MeshStandardMaterial({ color: 0xf2e8da, roughness: .6 });
+function spillCup(at, ux, uz) {
+  const cup = new THREE.Mesh(new THREE.CylinderGeometry(.075, .062, .13, 10), spillCupMat);
+  cup.position.set(at.x, 1.15, at.z); cup.castShadow = true; scene.add(cup);
+  spills.push({ cup, vx: ux * 1.6, vz: uz * 1.6, vy: 2.4, puddle: null, t0: 0 });
+}
+function updateSpills(dt, t) {
+  for (let i = spills.length - 1; i >= 0; i--) {
+    const s = spills[i];
+    if (s.cup) {
+      s.vy -= 9.8 * dt;
+      s.cup.position.x += s.vx * dt; s.cup.position.z += s.vz * dt; s.cup.position.y += s.vy * dt;
+      s.cup.rotation.x += 11 * dt; s.cup.rotation.z += 7 * dt; // elle tournoie
+      if (s.cup.position.y <= .07) {
+        // Impact : la flaque nait sous la tasse, qui reste couchee a cote.
+        const p = s.cup.position;
+        s.puddle = new THREE.Mesh(new THREE.CylinderGeometry(.42, .42, .01, 20),
+          new THREE.MeshStandardMaterial({ color: 0x3b2314, roughness: .15, transparent: true, opacity: .9 }));
+        s.puddle.position.set(p.x, .012, p.z); s.puddle.scale.set(.05, 1, .05); scene.add(s.puddle);
+        p.y = .07; s.cup.rotation.set(Math.PI / 2, s.cup.rotation.y, 0);
+        s.lying = s.cup; s.cup = null; s.t0 = t;
+      }
+      continue;
+    }
+    const e = t - s.t0;
+    const grow = Math.min(1, e / .6), k = 1 - (1 - grow) ** 3; // s'etale vite puis ralentit
+    s.puddle.scale.set(k * (.8 + .2 * Math.sin(s.t0)), 1, k);
+    s.puddle.material.opacity = .9 * Math.min(1, Math.max(0, (SPILL_DRY - e) / 4));
+    if (e >= SPILL_DRY) {
+      scene.remove(s.puddle); scene.remove(s.lying);
+      s.puddle.geometry.dispose(); s.puddle.material.dispose(); s.lying.geometry.dispose();
+      spills.splice(i, 1);
+    }
+  }
+}
+
+// Un corps qui tombe sur le parquet : un son grave et bref, qui retombe.
+function thud() {
+  if (!soundOn) return;
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+    o.type = 'triangle'; o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(48, t + .22);
+    g.gain.setValueAtTime(.0001, t);
+    g.gain.exponentialRampToValueAtTime(.25, t + .01);
+    g.gain.exponentialRampToValueAtTime(.0001, t + .3);
+    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + .35);
+  } catch { /* pas d'audio : la chute se voit tres bien */ }
+}
+
 /* ---------- Panneau « Sessions » ---------- */
 const sessionsEl = document.getElementById('sessions'), sessionsListEl = document.getElementById('sessions-list');
 function renderSessions() {
@@ -2057,6 +2598,9 @@ function renderSessions() {
     const dot = document.createElement('span'); dot.className = 'dot';
     dot.style.background = '#' + s.pod.tint.toString(16).padStart(6, '0');
     const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = s.project;
+    // Deux projets du meme nom sur deux postes differents ne sont pas le meme
+    // dossier : la ligne doit dire chez qui ca se passe.
+    if (s.machine) nm.title = s.project + ' · ' + s.machine;
     const ct = document.createElement('span'); ct.className = 'ct';
     const bits = [];
     if (s.subs.length) bits.push(s.subs.length + ' 🤖');
@@ -2115,6 +2659,7 @@ function renderDetail() {
     if (!sessions.has(s.sid)) return select(null); // session fermée
     title = s.project;
     sub = s.cwd;
+    if (s.machine) rows.push(['Poste', s.machine]);
     rows.push(['Session', s.sid.slice(0, 8)]);
     rows.push(['Ouverte depuis', since(s.startedAt)]);
     rows.push(['Sous-agents', s.subs.length + ' sur ce dossier']);
@@ -2174,6 +2719,53 @@ soundEl.onclick = () => {
   soundEl.textContent = (soundOn ? '🔔' : '🔕') + ' Son';
   ambienceOn(soundOn);
   if (soundOn) ping();
+};
+
+/* ---------- Menu Actions ---------- */
+// Des gestes pour animer la piece a la main. Rien ici ne touche aux sessions : on ne
+// derange jamais quelqu'un qui travaille.
+const actionsEl = document.getElementById('actions'), actionsMenuEl = document.getElementById('actions-menu');
+const working = (a) => a.state === 'work' || a.state === 'walkin';
+function showActions(open) {
+  actionsMenuEl.hidden = !open;
+  actionsEl.setAttribute('aria-expanded', String(open));
+}
+actionsEl.onclick = (e) => { e.stopPropagation(); showActions(actionsMenuEl.hidden); };
+document.addEventListener('click', (e) => {
+  if (!actionsMenuEl.hidden && !actionsMenuEl.contains?.(e.target)) showActions(false);
+});
+addEventListener('keydown', (e) => { if (e.key === 'Escape') showActions(false); });
+const ACTIONS = {
+  fall() {
+    const who = [...agents].filter((a) => !a.fall && !working(a));
+    // Pas tous a la meme image : une demi-seconde d'ecart, ca fait vraie pagaille.
+    for (const a of who) setTimeout(() => a.topple(clock.elapsedTime), Math.random() * 500);
+    log(who.length ? '💥 ' + who.length + (who.length > 1 ? ' personnes par terre' : ' personne par terre')
+      : '💥 personne à faire tomber : tout le monde travaille');
+  },
+  shuffle() {
+    const who = staff.filter((a) => !a.session && !a.fall);
+    for (const a of who) a.goIdle();
+    log(who.length ? '🔀 ' + who.length + ' employé(s) changent de place' : '🔀 aucun employé au repos');
+  },
+  cat() {
+    if (CAT.state === 'rest') { CAT.until = clock.elapsedTime; log('🐈 le chat s\'étire'); }
+    else log('🐈 le chat est déjà debout');
+  },
+  mop() {
+    const n = spills.length;
+    // La tasse partage son materiau avec les autres : seule la flaque a le sien.
+    for (const s of spills) for (const m of [s.cup, s.lying, s.puddle]) if (m) { scene.remove(m); m.geometry.dispose(); }
+    for (const s of spills) s.puddle?.material.dispose();
+    spills.length = 0;
+    log(n ? '🧽 café épongé' : '🧽 rien à éponger');
+  },
+};
+actionsMenuEl.onclick = (e) => {
+  const b = e.target.closest?.('[data-action]');
+  if (!b) return;
+  showActions(false);
+  ACTIONS[b.dataset.action]?.();
 };
 
 /* ---------- HUD ---------- */
@@ -2283,10 +2875,10 @@ function drawClock() {
 drawClock();
 const clockFace = new THREE.Mesh(new THREE.CircleGeometry(.5, 48),
   new THREE.MeshBasicMaterial({ map: clockTex, transparent: true }));
-clockFace.position.set(-1.05, 2.35, -ROOM.d / 2 + .05); scene.add(clockFace);
+clockFace.position.set(-1.05, 2.35, wallB(.05)); scene.add(clockFace);
 const clockRim = new THREE.Mesh(new THREE.TorusGeometry(.52, .04, 10, 36),
   new THREE.MeshStandardMaterial({ color: 0x6d4b33, roughness: .7 }));
-clockRim.position.set(-1.05, 2.35, -ROOM.d / 2 + .05); scene.add(clockRim);
+clockRim.position.set(-1.05, 2.35, wallB(.05)); scene.add(clockRim);
 
 /* ---------- Meteo : on interroge le serveur, jamais le service directement ---------- */
 // Le serveur met deja en cache dix minutes ; inutile de le solliciter plus souvent
@@ -2376,6 +2968,33 @@ function startDemo() {
   const end = Math.max(endA, endB);
   at(end + 5000, () => ['demo-A', 'demo-B'].forEach(sid => handle({ session_id: sid, hook_event_name: 'SessionEnd' })));
   at(end + 11000, () => { demoOn = false; startDemo(); });
+
+  // `?demo=20` remplit la grille d'autant d'îlots de figuration, en plus des deux
+  // scénarios. C'est la seule façon de VOIR si la pièce tient à pleine charge :
+  // le serveur ne rejoue aucune session, donc une page rechargée arrive dans une
+  // pièce vide et ne dira jamais si vingt îlots se marchent dessus.
+  const fill = Number(params.get('demo')) || 0;
+  if (fill > 0) fillDemo(Math.min(fill, POD_X.length * POD_Z.length));
+}
+const DEMO_PROJECTS = ['protrack', 'facturation', 'rh-portail', 'etl-nuit', 'mobile-v2',
+  'datalake', 'sso', 'monitoring', 'crm', 'devis', 'stock', 'paie', 'cartographie',
+  'notifs', 'search', 'billing', 'infra', 'docs', 'veille', 'achats'];
+function fillDemo(n) {
+  const metiers = ['Explore', 'Plan', 'general-purpose', 'ingenieur-exigences', 'redacteur-livrables'];
+  for (let i = 0; i < n; i++) {
+    const sid = 'demo-f' + i, cwd = 'C:/dev/' + (DEMO_PROJECTS[i] || 'projet-' + i);
+    const machine = 'poste-' + String(1 + (i % 7)).padStart(2, '0');
+    handle({ session_id: sid, cwd, machine, hook_event_name: 'SessionStart', fleet: true });
+    for (let k = 0; k < 1 + (i % 3); k++) {
+      handle({ session_id: sid, cwd, machine, fleet: true, hook_event_name: 'PreToolUse',
+        act: 'task', tool_name: 'Agent', tool_use_id: 'f' + i + '-' + k,
+        tool_input: { subagent_type: metiers[(i + k) % metiers.length] } });
+    }
+    // Un îlot sur cinq attend une réponse : c'est l'état qu'on vient vérifier.
+    if (i % 5 === 2) handle({ session_id: sid, machine, fleet: true, hook_event_name: 'Notification' });
+    else handle({ session_id: sid, machine, fleet: true, hook_event_name: 'PreToolUse',
+      act: ['read', 'type', 'term', 'web'][i % 4], label: '🖥️ console' });
+  }
 }
 function stopDemo() {
   demoTimers.forEach(clearTimeout); demoTimers = []; demoOn = false;
@@ -2489,12 +3108,13 @@ renderer.setAnimationLoop(() => {
     drawSky(hour, t); skyLast = t; skyDirty = false;
   }
   for (const a of [...agents]) a.update(dt, t);
+  updateSpills(dt, t);
   for (const p of pods) {
     if (p.beaconColor != null) {            // battement du gyrophare
       const k = .45 + .55 * Math.abs(Math.sin(t * 4));
       p.beacon.material.emissiveIntensity = k * 2;
-      p.beaconLight.intensity = k * 16;
       p.beacon.scale.setScalar(.9 + k * .25);
+      if (p === beaconPod) beaconLight.intensity = k * 16;
     }
   }
   updateLife(dt, t);

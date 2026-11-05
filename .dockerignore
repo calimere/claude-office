@@ -1,0 +1,10 @@
+.git
+node_modules
+*.bak
+.state.json
+.roster.json
+smoke*.mjs
+README.md
+agent
+Dockerfile
+docker-compose.yml

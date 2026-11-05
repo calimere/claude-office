@@ -1,102 +1,263 @@
-// Claude Office — pont entre les hooks de Claude Code et la vue three.js
-// Zéro dépendance. Node 18+.  Lancer : node server.js  → http://localhost:4317
+// Claude Office — le serveur de la flotte.
+// Zero dependance. Node 18+.  Lancer : node server.js  → http://localhost:4317
+//
+//   agent d'un poste ──WS /ingest (assaini)──┐
+//                                            ├──▶ etat en RAM ──SSE /stream──▶ index.html
+//   hooks locaux ─────HTTP /event (brut)─────┘
+//
+// RIEN n'est stocke. Pas de base de donnees, pas de journal d'activite, pas d'etat
+// de session sur disque : on recharge la page, tout disparait. Le seul element qui
+// survit a un redemarrage est le ROSTER — la liste des metiers d'agents deja vus au
+// moins une fois. C'est lui qui peuple l'open space et donne a la piece son animation ;
+// il ne contient ni projet, ni poste, ni activite, juste des noms de metiers.
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
+const ws = require('./ws.js');
+const { PROTOCOL_VERSION, sanitize } = require('./protocol.js');
 
 const PORT = Number(process.env.PORT) || 4317;
 const HOST = process.env.HOST || '127.0.0.1';
-const clients = new Set();
+// Jeton que les agents presentent pour publier. Jamais vide : un /ingest ouvert sur
+// 0.0.0.0 laisserait n'importe qui peupler la piece. Sans valeur fournie, on en tire
+// un au hasard et on l'affiche au demarrage — zero configuration, mais pas ouvert.
+const TOKEN = process.env.OFFICE_TOKEN || crypto.randomBytes(16).toString('hex');
+const GENERATED_TOKEN = !process.env.OFFICE_TOKEN;
+// Mot de passe de la page. Vide = libre, ce qui convient a un LAN ; on le remplit
+// le jour ou le serveur prend une adresse publique.
+const VIEW_PASSWORD = process.env.VIEW_PASSWORD || '';
+const VIEW_USER = process.env.VIEW_USER || 'office';
+// /event accepte des hooks BRUTS (avec prompts, commandes, chemins). Reserve a la
+// boucle locale : l'ouvrir au reseau, ce serait precisement la fuite qu'on evite.
+const ALLOW_REMOTE_EVENT = process.env.ALLOW_REMOTE_EVENT === '1';
 
-// Mémoire des sessions ouvertes : sans elle, une page rechargée reste vide jusqu'au
-// prochain événement. On retient l'identité (id + projet) ET les sous-agents encore
-// en vol, sinon des agents lancés avant l'ouverture de la page resteraient invisibles.
-// Elle est aussi écrite sur disque : un redémarrage du serveur ne doit pas rendre
-// invisibles des agents lancés une heure plus tôt et toujours au travail.
-const live = new Map();
-// L'effectif de la maison : tous les types d'agents deja appeles au moins une fois.
-// La page en fait des employes permanents. Sans cette memoire, un rechargement
-// viderait l'open space de tous ceux qui ne sont pas sur un dossier a cet instant.
-const staff = new Map(); // type -> { type, since }
-const TTL = 12 * 3600e3; // une session sans signe de vie depuis 12 h est oubliée
-const MAX_TASKS = 12;    // garde-fou si un PostToolUse se perd
-const isTask = (n) => n === 'Task' || n === 'Agent';
-const STATE = path.join(__dirname, '.state.json');
+const MACHINE_TIMEOUT = 45e3;  // sans signe de vie : le poste est considere parti
+// Delai de grace apres une coupure brutale, avant de demonter les ilots du poste.
+// Reglable surtout pour les tests, qui ne vont pas attendre vingt secondes.
+const OFFLINE_GRACE = Number(process.env.OFFLINE_GRACE) || 20e3;
+// Periode du ping qui revele les sockets mortes. Reglable pour les memes raisons.
+const SWEEP_EVERY = Number(process.env.SWEEP_EVERY) || 15e3;
+// Deplacable : dans un conteneur, c'est le seul fichier a monter sur un volume.
+const ROSTER_FILE = process.env.ROSTER_FILE || path.join(__dirname, '.roster.json');
 
+/* ======================= Le roster (seule chose persistee) ======================= */
+
+const roster = new Map(); // type -> { type, since }
 try {
-  const saved = JSON.parse(fs.readFileSync(STATE, 'utf8'));
-  const now = Date.now();
-  for (const s of saved.sessions ?? []) {
-    if (now - s._ts > TTL) continue;
-    live.set(s.session_id, { ...s, tasks: new Map(s.tasks ?? []) });
+  for (const a of JSON.parse(fs.readFileSync(ROSTER_FILE, 'utf8')).roster ?? []) {
+    if (a && typeof a.type === 'string') roster.set(a.type, { type: a.type, since: a.since || 0 });
   }
-  for (const a of saved.staff ?? []) staff.set(a.type, a);
-  if (live.size) console.log(`  ${live.size} session(s) reprise(s) depuis .state.json`);
-  if (staff.size) console.log(`  ${staff.size} employe(s) repris depuis .state.json`);
-} catch { /* premier démarrage, ou état illisible : on repart à vide */ }
+  if (roster.size) console.log(`  ${roster.size} metier(s) repris du roster`);
+} catch { /* premier demarrage, ou roster illisible : la maison part vide */ }
 
-let saveTimer = null;
-function persist() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    const sessions = [...live.values()].map((s) => ({ ...s, tasks: [...s.tasks] }));
-    fs.writeFile(STATE, JSON.stringify({ sessions, staff: [...staff.values()] }), () => {});
+let rosterTimer = null;
+function hire(type) {
+  if (!type || roster.has(type)) return false;
+  roster.set(type, { type, since: Date.now() });
+  clearTimeout(rosterTimer);
+  rosterTimer = setTimeout(() => {
+    fs.writeFile(ROSTER_FILE, JSON.stringify({ roster: [...roster.values()] }), () => {});
   }, 800);
-  saveTimer.unref?.();
+  rosterTimer.unref?.();
+  broadcast({ hook_event_name: 'Staff', staff: [...roster.keys()] });
+  return true;
 }
 
-function remember(ev) {
-  const sid = ev.session_id;
-  if (!sid) return;
-  if (ev.hook_event_name === 'SessionEnd') { live.delete(sid); persist(); return; }
+/* ======================= L'etat vivant (RAM uniquement) ======================= */
 
-  let s = live.get(sid);
-  if (!s) { s = { session_id: sid, cwd: ev.cwd, tasks: new Map() }; live.set(sid, s); }
-  if (ev.cwd) s.cwd = ev.cwd;
-  s._ts = ev._ts;
+// machine -> { name, since, lastSeen, sock, usage, sessions: Map }
+//   session -> { session, project, tasks: Map(ref -> { agent, agentId }) }
+const machines = new Map();
 
-  if (isTask(ev.tool_name) && ev.tool_use_id) {
-    if (ev.hook_event_name === 'PreToolUse') {
-      // Premiere apparition de ce metier : il entre a l'effectif, et n'en sort plus.
-      const type = ev.tool_input?.subagent_type || 'agent';
-      if (!staff.has(type)) staff.set(type, { type, since: ev._ts });
-      // On ne retient que l'essentiel : le prompt complet n'a rien à faire sur disque.
-      s.tasks.set(ev.tool_use_id, {
-        session_id: sid, cwd: ev.cwd, hook_event_name: 'PreToolUse',
-        tool_name: ev.tool_name, tool_use_id: ev.tool_use_id,
-        tool_input: {
-          subagent_type: ev.tool_input?.subagent_type,
-          description: ev.tool_input?.description,
-        },
-      });
-    }
-    if (ev.hook_event_name === 'PostToolUse') {
-      const r = ev.tool_response ?? {}, t = s.tasks.get(ev.tool_use_id);
-      // Lancement asynchrone : l'appel rend la main mais l'agent commence seulement.
-      // On le garde, et on note son agentId pour le retirer à son vrai SubagentStop.
-      if (r.isAsync || r.status === 'async_launched') { if (t) t.agentId = r.agentId; }
-      else s.tasks.delete(ev.tool_use_id);
-    }
-    while (s.tasks.size > MAX_TASKS) s.tasks.delete(s.tasks.keys().next().value);
+const clients = new Set();       // navigateurs abonnes au flux SSE
+const SAFE_NAME = /^[A-Za-z0-9 ._-]{1,32}$/;
+
+function machineOf(name) {
+  let m = machines.get(name);
+  if (!m) {
+    m = { name, since: Date.now(), lastSeen: Date.now(), sock: null, usage: null, sessions: new Map() };
+    machines.set(name, m);
   }
-  // Fin réelle d'un agent asynchrone
-  if (ev.hook_event_name === 'SubagentStop' && ev.agent_id) {
-    for (const [k, t] of s.tasks) if (t.agentId === ev.agent_id) s.tasks.delete(k);
-  }
-  for (const [k, v] of live) if (ev._ts - v._ts > TTL) live.delete(k);
-  persist();
+  m.lastSeen = Date.now();
+  return m;
 }
 
+function broadcast(ev) {
+  const msg = `data: ${JSON.stringify(ev)}\n\n`;
+  for (const res of clients) res.write(msg);
+}
+
+/* ======================= Du fil a la page ======================= */
+
+// Libelles generiques : en mode flotte la page n'a RIEN a afficher du contenu, donc
+// elle affiche l'activite. C'est exactement ce qu'on veut voir — quelqu'un travaille,
+// quelqu'un attend, quelqu'un est au repos — sans savoir sur quoi.
+const LABELS = {
+  read: '🔎 cherche', type: '⌨️ code', term: '🖥️ console',
+  web: '🌐 consulte', plan: '📝 planifie', think: '💭 réfléchit',
+};
+
+// Deplie un evenement du fil en evenement de hook, la forme que la page parle.
+// L'identifiant de session porte le nom du poste : deux PC ne peuvent pas se
+// marcher dessus, et l'ilot sait de quelle machine il vient.
+function expand(ev) {
+  const out = {
+    session_id: ev.machine + ':' + ev.session,
+    machine: ev.machine,
+    hook_event_name: ev.event,
+    fleet: true,
+    _ts: ev.ts || Date.now(),
+  };
+  if (ev.project) out.cwd = ev.project;
+  if (typeof ev.bg === 'number' && ev.bg >= 0) {
+    out.background_tasks = Array.from({ length: ev.bg }, () => ({ status: 'running' }));
+  }
+
+  if (ev.event === 'UserPromptSubmit') {
+    // Le prompt n'a pas quitte le poste. Seul « il demandait une pause cafe » est
+    // arrive jusqu'ici, et il suffit a envoyer le lead au mange-debout.
+    out.prompt = ev.coffee ? 'pause' : '';
+    out.act = 'think';
+    out.label = '💭 nouvelle consigne';
+    return out;
+  }
+
+  if (ev.event === 'PreToolUse' || ev.event === 'PostToolUse') {
+    out.act = ev.act || 'think';
+    if (ev.ref) out.tool_use_id = ev.ref;
+    if (out.act === 'task') {
+      out.tool_name = 'Agent';
+      out.tool_input = { subagent_type: ev.agent || 'agent' };
+      if (ev.async) out.tool_response = { isAsync: true, status: 'async_launched', agentId: ev.agentId };
+    } else {
+      out.label = LABELS[out.act] || LABELS.think;
+      if (Number.isFinite(ev.ms)) out.duration_ms = ev.ms;
+    }
+    return out;
+  }
+
+  if (ev.event === 'SubagentStop' && ev.agentId) out.agent_id = ev.agentId;
+  return out;
+}
+
+// Applique un evenement du fil : met a jour ce que le serveur croit savoir du poste
+// (necessaire pour la reconciliation et pour demonter les ilots quand il part), puis
+// le relaie aux navigateurs.
+function applyEvent(m, ev) {
+  ev.machine = m.name;
+  const key = ev.session;
+  if (!key) return;
+
+  if (ev.event === 'SessionEnd') m.sessions.delete(key);
+  else {
+    let s = m.sessions.get(key);
+    if (!s) { s = { session: key, project: ev.project || '', tasks: new Map() }; m.sessions.set(key, s); }
+    if (ev.project) s.project = ev.project;
+
+    if (ev.act === 'task' && ev.ref) {
+      if (ev.event === 'PreToolUse') {
+        hire(ev.agent || 'agent');
+        s.tasks.set(ev.ref, { agent: ev.agent || 'agent', agentId: null });
+      } else if (ev.event === 'PostToolUse') {
+        // Lancement asynchrone : l'appel rend la main mais l'agent commence seulement.
+        if (ev.async) { const t = s.tasks.get(ev.ref); if (t) t.agentId = ev.agentId || null; }
+        else s.tasks.delete(ev.ref);
+      }
+    }
+    if (ev.event === 'SubagentStop' && ev.agentId) {
+      for (const [k, t] of s.tasks) if (t.agentId === ev.agentId) s.tasks.delete(k);
+    }
+  }
+  broadcast(expand(ev));
+}
+
+/* ======================= Reconciliation par instantane ======================= */
+
+// Un evenement perdu sur le reseau laisserait un agent assis a son bureau pour
+// l'eternite. Le poste reenvoie donc regulierement l'etat complet de ce qu'il voit ;
+// on le compare a ce qu'on croyait, et on n'emet QUE les corrections. Sans ca, le
+// seul remede a un PostToolUse egare serait de recharger la page.
+function applySnapshot(m, snap) {
+  const seen = new Set();
+  for (const s of snap.sessions ?? []) {
+    if (!s || typeof s.session !== 'string') continue;
+    seen.add(s.session);
+    let cur = m.sessions.get(s.session);
+    if (!cur) {
+      cur = { session: s.session, project: s.project || '', tasks: new Map() };
+      m.sessions.set(s.session, cur);
+      broadcast(expand({ machine: m.name, session: s.session, project: cur.project,
+        event: 'SessionStart', ts: Date.now() }));
+    }
+    const tasks = new Map();
+    for (const t of s.tasks ?? []) {
+      if (!t || typeof t.ref !== 'string') continue;
+      tasks.set(t.ref, { agent: t.agent || 'agent', agentId: t.agentId || null });
+    }
+    // Missions que le poste voit et que nous avions ratees
+    for (const [ref, t] of tasks) {
+      if (cur.tasks.has(ref)) continue;
+      hire(t.agent);
+      cur.tasks.set(ref, t);
+      broadcast(expand({ machine: m.name, session: s.session, event: 'PreToolUse',
+        act: 'task', ref, agent: t.agent, ts: Date.now() }));
+      if (t.agentId) {
+        broadcast(expand({ machine: m.name, session: s.session, event: 'PostToolUse',
+          act: 'task', ref, agent: t.agent, async: true, agentId: t.agentId, ts: Date.now() }));
+      }
+    }
+    // Missions finies sans qu'on l'apprenne : on libere le bureau
+    for (const ref of [...cur.tasks.keys()]) {
+      if (tasks.has(ref)) continue;
+      cur.tasks.delete(ref);
+      broadcast(expand({ machine: m.name, session: s.session, event: 'PostToolUse',
+        act: 'task', ref, ts: Date.now() }));
+    }
+  }
+  // Sessions fermees sans qu'on l'apprenne : on demonte l'ilot
+  for (const key of [...m.sessions.keys()]) {
+    if (seen.has(key)) continue;
+    m.sessions.delete(key);
+    broadcast(expand({ machine: m.name, session: key, event: 'SessionEnd', ts: Date.now() }));
+  }
+}
+
+// Depart d'un poste : ses ilots n'ont plus personne pour les animer, on les demonte.
+function dropMachine(m, why) {
+  clearTimeout(m.graceTimer); m.graceTimer = null;
+  for (const key of m.sessions.keys()) {
+    broadcast(expand({ machine: m.name, session: key, event: 'SessionEnd', ts: Date.now() }));
+  }
+  machines.delete(m.name);
+  console.log(`  ← ${m.name} s'en va (${why})`);
+}
+
+// Un poste dont le WebSocket est tombe sans fermeture propre (cable debranche, PC
+// en veille) : cote serveur, la connexion a l'air parfaitement ouverte. Rien ne
+// revele une socket morte sauf une ecriture — d'ou ce ping periodique, qui echoue
+// et declenche la fermeture. C'est la seule facon de s'en apercevoir autrement
+// qu'au bout des longues minutes du TCP.
+//
+// Compter : jusqu'a SWEEP_EVERY pour s'en apercevoir, puis OFFLINE_GRACE avant de
+// demonter. Une machine qui plante disparait donc du bureau en 35 s au pire.
+setInterval(() => {
+  const now = Date.now();
+  for (const m of [...machines.values()]) {
+    if (m.sock && m.sock.open) { m.sock.ping(); continue; }
+    if (!m.graceTimer && now - m.lastSeen > MACHINE_TIMEOUT) dropMachine(m, 'silence');
+  }
+}, SWEEP_EVERY).unref?.();
 
 /* ======================= Meteo ======================= */
 // Open-Meteo : pas de cle d'API, pas de compte. C'est le SEUL appel sortant de ce
 // serveur. Ce qui part : le nom de la ville, puis des coordonnees. Rien d'autre —
-// ni chemin, ni nom de projet, ni contenu de session.
+// ni poste, ni projet, ni activite.
 const CITY = process.env.CITY || 'Paris';
-const geoCache = new Map();   // ville -> coordonnees, valable pour la vie du process
-let wxCache = null;           // { ville, at, data }
-const WX_TTL = 10 * 60e3;     // la meteo ne change pas toutes les secondes
+const geoCache = new Map();
+let wxCache = null;
+const WX_TTL = 10 * 60e3;
 
 async function geocode(city) {
   if (geoCache.has(city)) return geoCache.get(city);
@@ -119,8 +280,6 @@ async function weather(city) {
   const r = await fetch(u, { signal: AbortSignal.timeout(6000) });
   const j = await r.json();
   if (!j.current) throw new Error('reponse meteo inattendue');
-  // On renvoie lever et coucher reels : c'est eux qui decideront d'allumer les lampes,
-  // plutot que des heures fixes qui seraient fausses en decembre comme en juin.
   const data = {
     city: g.name, country: g.country,
     code: j.current.weather_code, temp: j.current.temperature_2m,
@@ -133,16 +292,17 @@ async function weather(city) {
 }
 
 /* ======================= Usage des 5 h ======================= */
-// Lit les transcripts de Claude Code pour n'en extraire QUE deux choses par ligne :
-// l'horodatage et le bloc `usage`. Le contenu des messages n'est jamais lu, jamais
-// retenu, jamais servi — et rien de tout ca ne quitte la machine.
+// Deux sources, dans cet ordre :
+//  - les transcripts locaux, quand le serveur tourne sur une machine de dev ;
+//  - sinon la somme de ce que les postes rapportent (dans un conteneur, ~/.claude
+//    n'existe pas : scanner le disque ne donnerait rien).
+// Dans les deux cas on ne lit QUE l'horodatage et le bloc `usage`. Jamais un message.
 const PROJECTS = path.join(os.homedir(), '.claude', 'projects');
-const WINDOW = 5 * 3600e3;   // duree d'un bloc
-// On garde plus que la duree d'un bloc : pour savoir OU commence le bloc courant, il
-// faut pouvoir remonter au message qui l'a ouvert, et il peut dater de presque 5 h.
+const WINDOW = 5 * 3600e3;
 const KEEP = 12 * 3600e3;
-const seen = new Map();  // fichier -> decalage deja lu
-let samples = [];        // { t, tok } encore dans la fenetre
+const HAS_TRANSCRIPTS = (() => { try { return fs.statSync(PROJECTS).isDirectory(); } catch { return false; } })();
+const seen = new Map();
+let samples = [];
 let usageAt = 0;
 
 function scanUsage() {
@@ -159,10 +319,10 @@ function scanUsage() {
 
   for (const f of files) {
     let st; try { st = fs.statSync(f); } catch { continue; }
-    if (st.mtimeMs < cut) { seen.delete(f); continue; } // trop vieux pour compter
+    if (st.mtimeMs < cut) { seen.delete(f); continue; }
     let off = seen.get(f) ?? 0;
-    if (st.size < off) off = 0;          // fichier reecrit : on repart du debut
-    if (st.size === off) continue;       // rien de neuf
+    if (st.size < off) off = 0;
+    if (st.size === off) continue;
     let chunk;
     try {
       const fd = fs.openSync(f, 'r');
@@ -171,9 +331,6 @@ function scanUsage() {
       fs.closeSync(fd);
       chunk = buf.toString('utf8');
     } catch { continue; }
-    // Un transcript est un journal en ajout seul : on ne relit que ce qui s'est ecrit
-    // depuis le dernier passage, et on s'arrete a la derniere ligne COMPLETE — la
-    // suivante est peut-etre en cours d'ecriture, elle sera lue au prochain tour.
     const lastNl = chunk.lastIndexOf('\n');
     if (lastNl < 0) continue;
     seen.set(f, off + Buffer.byteLength(chunk.slice(0, lastNl + 1), 'utf8'));
@@ -183,7 +340,6 @@ function scanUsage() {
       const u = j.message?.usage; if (!u) continue;
       const t = Date.parse(j.timestamp || '');
       if (!Number.isFinite(t)) continue;
-      // Le cache_read n'est pas compte : il represente le contexte relu, pas le travail.
       samples.push({ t, tok: (u.input_tokens || 0) + (u.output_tokens || 0)
         + (u.cache_creation_input_tokens || 0) });
     }
@@ -191,58 +347,192 @@ function scanUsage() {
   samples = samples.filter((x) => x.t >= cut).sort((a, b) => a.t - b.t);
 }
 
-// Le bloc de 5 h est ANCRE, pas glissant : il s'ouvre a un message et dure cinq heures,
-// puis le message suivant en ouvre un neuf. Une fenetre glissante donnerait un
-// indicateur colle a 100 % des qu'on travaille plus de cinq heures d'affilee, puisque
-// le plus ancien message aurait toujours exactement cinq heures.
+// Le bloc de 5 h est ANCRE, pas glissant : il s'ouvre a un message et dure cinq
+// heures, puis le message suivant en ouvre un neuf.
 function blockStartOf(list, now) {
   if (!list.length) return now;
   let start = list[0].t;
-  for (const x of list) if (x.t >= start + WINDOW) start = x.t; // ce message ouvre un bloc
+  for (const x of list) if (x.t >= start + WINDOW) start = x.t;
   return start;
 }
 
-function usageNow() {
+function localUsage() {
   if (Date.now() - usageAt > 20e3) { scanUsage(); usageAt = Date.now(); }
   const now = Date.now();
   let start = blockStartOf(samples, now);
-  // Bloc arrive a terme sans qu'un nouveau message l'ait relance : on est a zero d'un
-  // bloc qui n'a pas encore commence, pas a 100 % d'un bloc fini.
   if (now >= start + WINDOW) start = now;
   const win = samples.filter((x) => x.t >= start && x.t < start + WINDOW);
   return {
     tokens: win.reduce((n, x) => n + x.tok, 0),
     messages: win.length,
-    blockStart: start,
-    blockEnd: start + WINDOW,
+    blockStart: start, blockEnd: start + WINDOW,
     elapsed: Math.min(1, Math.max(0, (now - start) / WINDOW)),
     now,
   };
 }
 
-function broadcast(ev) {
-  const msg = `data: ${JSON.stringify(ev)}\n\n`;
-  for (const res of clients) res.write(msg);
+// En flotte, chaque poste a SON bloc de 5 h, demarre a une heure differente. Les
+// additionner donnerait une fenetre qui ne veut rien dire : on somme la consommation
+// et on retient l'avancement du poste le plus engage dans son bloc.
+function fleetUsage() {
+  const now = Date.now();
+  let tokens = 0, messages = 0, elapsed = 0;
+  const per = [];
+  for (const m of machines.values()) {
+    const u = m.usage;
+    if (!u || now > u.blockEnd) continue;
+    tokens += u.tokens || 0;
+    messages += u.messages || 0;
+    elapsed = Math.max(elapsed, u.elapsed || 0);
+    per.push({ machine: m.name, tokens: u.tokens || 0, elapsed: u.elapsed || 0 });
+  }
+  return { fleet: true, tokens, messages, elapsed, machines: per, now };
 }
 
-http.createServer((req, res) => {
-  // Les hooks Claude Code postent ici le JSON reçu sur stdin
+const usageNow = () => (HAS_TRANSCRIPTS ? localUsage() : fleetUsage());
+
+/* ======================= Entree des agents (WebSocket) ======================= */
+
+// Comparaison a temps constant : un jeton ne se devine pas a la milliseconde pres.
+function tokenOk(given) {
+  const a = Buffer.from(String(given || ''));
+  const b = Buffer.from(TOKEN);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function ingestRoute(req) {
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { return null; }
+  if (url.pathname !== '/ingest') return null;
+  const given = url.searchParams.get('token')
+    || (req.headers.authorization || '').replace(/^Bearer /i, '');
+  if (!tokenOk(given)) return null;
+  const name = (url.searchParams.get('machine') || '').trim();
+  if (!SAFE_NAME.test(name)) return null;
+  return { name };
+}
+
+function onAgent(sock, ctx) {
+  // Un poste qui se reconnecte remplace le precedent : sans ca, deux connexions
+  // pour la meme machine se marcheraient dessus apres une coupure reseau.
+  const old = machines.get(ctx.name);
+  if (old && old.sock && old.sock !== sock) {
+    // La fermeture de l'ancienne connexion ne doit RIEN demonter : le poste est
+    // toujours la, il vient juste de se rebrancher. On la debranche de son gestionnaire
+    // avant de la fermer, sinon elle serait lue comme un depart propre et ferait
+    // tomber les ilots une fraction de seconde avant que la nouvelle les remonte.
+    const stale = old.sock;
+    old.sock = null;
+    stale.onClose = () => {};
+    stale.close(1000, 'remplace');
+  }
+  const m = machineOf(ctx.name);
+  // Reconnexion dans le delai de grace : on annule le demontage, et l'instantane
+  // qui suit remet l'etat d'aplomb. Le spectateur n'aura rien vu.
+  clearTimeout(m.graceTimer); m.graceTimer = null;
+  m.sock = sock;
+  console.log(`  → ${ctx.name} se connecte`);
+
+  sock.onText = (text) => {
+    m.lastSeen = Date.now();
+    let msg;
+    try { msg = JSON.parse(text); } catch { return; }
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.v && msg.v !== PROTOCOL_VERSION) return; // protocole different : on ignore
+
+    if (msg.type === 'event') { applyEvent(m, { ...msg, machine: m.name }); return; }
+    if (msg.type === 'snapshot') { applySnapshot(m, msg); return; }
+    if (msg.type === 'usage') {
+      m.usage = {
+        tokens: Number(msg.tokens) || 0, messages: Number(msg.messages) || 0,
+        blockStart: Number(msg.blockStart) || 0, blockEnd: Number(msg.blockEnd) || 0,
+        elapsed: Number(msg.elapsed) || 0,
+      };
+      return;
+    }
+    if (msg.type === 'hello') { sock.send(JSON.stringify({ type: 'welcome', v: PROTOCOL_VERSION })); return; }
+  };
+
+  // Fermeture PROPRE (l'agent s'arrete) : le poste est parti, on demonte tout de
+  // suite. Coupure BRUTALE (wifi, veille, cable) : on attend. Sans ce delai, un
+  // hoquet de reseau de deux secondes ferait disparaitre puis reapparaitre tout le
+  // plateau — une convulsion pour une broutille, alors que la reconnexion remet
+  // l'etat en place toute seule par son instantane.
+  sock.onClose = (code) => {
+    if (m.sock !== sock) return;
+    m.sock = null;
+    if (code === 1000) return dropMachine(m, 'deconnexion');
+    console.log(`  ~ ${m.name} a decroche, on attend ${OFFLINE_GRACE / 1000} s`);
+    m.graceTimer = setTimeout(() => {
+      if (machines.get(m.name) === m && !m.sock) dropMachine(m, 'coupure');
+    }, OFFLINE_GRACE);
+    m.graceTimer.unref?.();
+  };
+}
+
+/* ======================= HTTP ======================= */
+
+const isLoopback = (req) => {
+  const a = req.socket.remoteAddress || '';
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+};
+
+// Mot de passe de la page. Vide = pas de controle : c'est le mode LAN.
+function viewOk(req) {
+  if (!VIEW_PASSWORD) return true;
+  const h = req.headers.authorization || '';
+  if (!h.startsWith('Basic ')) return false;
+  const [u, p] = Buffer.from(h.slice(6), 'base64').toString('utf8').split(':');
+  const want = Buffer.from(VIEW_USER + ':' + VIEW_PASSWORD);
+  const got = Buffer.from((u || '') + ':' + (p || ''));
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
+const server = http.createServer((req, res) => {
+  // Hooks locaux, charge utile BRUTE. Boucle locale uniquement, sauf demande
+  // explicite : ce qui arrive ici contient les prompts et les commandes.
   if (req.method === 'POST' && req.url === '/event') {
+    if (!isLoopback(req) && !ALLOW_REMOTE_EVENT) return res.writeHead(403).end();
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 1e6) req.destroy(); });
     req.on('end', () => {
       try {
         const ev = JSON.parse(body);
         ev._ts = Date.now();
-        remember(ev);
-        broadcast(ev);
+        // Le roster se nourrit aussi du mode local.
+        if ((ev.tool_name === 'Task' || ev.tool_name === 'Agent')
+          && ev.hook_event_name === 'PreToolUse') hire(ev.tool_input?.subagent_type || 'agent');
+        broadcast(ev); // mode local : la page a droit au detail, rien ne sort de la machine
       } catch { /* JSON invalide : on ignore */ }
       res.writeHead(204).end();
     });
     return;
   }
 
-  // Flux temps réel pour la page (Server-Sent Events)
+  // Sonde de sante, AVANT le mot de passe : un orchestrateur n'a pas de compte, et
+  // un 401 ne dit pas si le serveur va bien. Elle ne revele rien — ni poste, ni
+  // projet, ni activite.
+  if (req.url === '/health') {
+    return res.writeHead(200, { 'Content-Type': 'application/json' })
+      .end(JSON.stringify({ ok: true, v: PROTOCOL_VERSION, machines: machines.size }));
+  }
+
+  // La page d'installation, servie par le serveur lui-meme : un collegue a qui l'on
+  // donne l'adresse du bureau y trouve aussi comment s'y brancher. Hors mot de passe
+  // pour la meme raison — il ne l'a pas encore.
+  if (req.url === '/install' || req.url === '/install.html') {
+    return fs.readFile(path.join(__dirname, 'install.html'), (err, data) => {
+      if (err) return res.writeHead(404).end('install.html introuvable');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(data);
+    });
+  }
+
+  if (!viewOk(req)) {
+    return res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Claude Office"' })
+      .end('Mot de passe requis');
+  }
+
+  // Flux temps reel pour la page (Server-Sent Events).
   if (req.url === '/stream') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -251,36 +541,18 @@ http.createServer((req, res) => {
       'Access-Control-Allow-Origin': '*',
     });
     res.write(': hello\n\n');
-    // L'effectif d'abord : la page reconstitue la maison, puis on y pose les dossiers.
-    if (staff.size) res.write(`data: ${JSON.stringify({
-      hook_event_name: 'Staff', staff: [...staff.keys()],
+    // Le roster, et rien d'autre. Aucune session n'est rejouee : une page
+    // rechargee repart d'une piece vide, et se repeuple au premier signe de vie
+    // des postes — les instantanes s'en chargent en moins de dix secondes.
+    if (roster.size) res.write(`data: ${JSON.stringify({
+      hook_event_name: 'Staff', staff: [...roster.keys()],
     })}\n\n`);
-    // Rejoue les sessions déjà ouvertes pour que la page se peuple immédiatement,
-    // sans attendre qu'un agent bouge. On les présente comme des SessionStart :
-    // l'îlot et son nom de projet sont reconstruits, l'activité reprend au vol.
-    for (const s of live.values()) {
-      res.write(`data: ${JSON.stringify({
-        session_id: s.session_id, cwd: s.cwd, hook_event_name: 'SessionStart', source: 'replay',
-      })}\n\n`);
-      // Puis les sous-agents encore en vol, pour qu'ils réapparaissent à leur poste.
-      // Le PostToolUse synthétique rend à la page l'agentId, dont elle a besoin pour
-      // reconnaître le SubagentStop qui mettra fin à la mission.
-      for (const ev of s.tasks.values()) {
-        res.write(`data: ${JSON.stringify({ ...ev, _replay: true })}\n\n`);
-        if (ev.agentId) res.write(`data: ${JSON.stringify({
-          ...ev, hook_event_name: 'PostToolUse', _replay: true,
-          tool_response: { isAsync: true, status: 'async_launched', agentId: ev.agentId },
-        })}\n\n`);
-      }
-    }
     clients.add(res);
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
     req.on('close', () => { clearInterval(ping); clients.delete(res); });
     return;
   }
 
-  // Meteo de la ville choisie. Hors ligne ou ville inconnue : on repond quand meme,
-  // avec offline:true, pour que la page continue sans meteo plutot que de casser.
   if (req.url.startsWith('/weather')) {
     let city = CITY;
     try { city = new URL(req.url, 'http://x').searchParams.get('city') || CITY; } catch { /* url bancale */ }
@@ -291,7 +563,6 @@ http.createServer((req, res) => {
     return;
   }
 
-  // Consommation sur la fenetre glissante de 5 h.
   if (req.url === '/usage') {
     let out;
     try { out = usageNow(); } catch (e) { out = { error: String(e && e.message || e) }; }
@@ -299,14 +570,18 @@ http.createServer((req, res) => {
     return;
   }
 
-  // Diagnostic : ce que le serveur croit savoir des sessions ouvertes
+  // Diagnostic : ce que le serveur croit savoir, a l'instant.
   if (req.url === '/sessions') {
-    const out = [...live.values()].map((s) => ({
-      session_id: s.session_id, cwd: s.cwd, _ts: s._ts,
-      subagents: [...s.tasks.values()].map((e) => e.tool_input?.subagent_type ?? 'agent'),
+    const out = [...machines.values()].map((m) => ({
+      machine: m.name, online: !!(m.sock && m.sock.open), lastSeen: m.lastSeen,
+      sessions: [...m.sessions.values()].map((s) => ({
+        session: s.session, project: s.project,
+        subagents: [...s.tasks.values()].map((t) => t.agent),
+      })),
     }));
     res.writeHead(200, { 'Content-Type': 'application/json' })
-      .end(JSON.stringify({ clients: clients.size, staff: [...staff.keys()], sessions: out }, null, 2));
+      .end(JSON.stringify({ v: PROTOCOL_VERSION, clients: clients.size,
+        roster: [...roster.keys()], machines: out }, null, 2));
     return;
   }
 
@@ -318,8 +593,8 @@ http.createServer((req, res) => {
     return;
   }
 
-  // Images posées à côté d'index.html (logo.png notamment). Nom de fichier simple
-  // uniquement : pas de sous-dossier, pas de remontée de chemin.
+  // Fichiers poses a cote d'index.html (logo.png notamment). Nom simple uniquement :
+  // pas de sous-dossier, pas de remontee de chemin.
   const asset = /^\/([A-Za-z0-9_-]+\.(png|jpg|jpeg|svg|webp|mp3|ogg|m4a|wav))$/.exec(req.url);
   if (asset) {
     const TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', svg: 'image/svg+xml',
@@ -332,7 +607,19 @@ http.createServer((req, res) => {
   }
 
   res.writeHead(404).end();
-}).listen(PORT, HOST, () => {
+});
+
+ws.attach(server, { route: ingestRoute, onOpen: onAgent });
+
+server.listen(PORT, HOST, () => {
   console.log(`Claude Office → http://localhost:${PORT}`);
   console.log(`  meteo : ${CITY}  (CITY=... pour en changer, ?city=... pour un essai)`);
+  console.log(`  usage : ${HAS_TRANSCRIPTS ? 'transcripts locaux' : 'rapporte par les postes'}`);
+  console.log(`  page  : ${VIEW_PASSWORD ? 'protegee (' + VIEW_USER + ')' : 'libre'}`);
+  if (GENERATED_TOKEN) {
+    console.log(`\n  Jeton des agents (tire au hasard, fixez OFFICE_TOKEN pour le garder) :`);
+    console.log(`    ${TOKEN}\n`);
+  }
 });
+
+module.exports = { server };
