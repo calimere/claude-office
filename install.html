@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Installer Claude Office</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&display=swap">
+<style>
+  /* Palette tirée de la pièce elle-même : plâtre des murs, bois du parquet, et
+     l'orange du lead. Les trois couleurs d'état sont celles que la page 3D emploie
+     déjà pour les pastilles — ici elles désignent la même chose. */
+  :root {
+    --ground:   #f2e9dc;
+    --surface:  #fbf6ef;
+    --sunk:     #e8dbca;
+    --ink:      #2b221c;
+    --muted:    #786455;
+    --rule:     rgba(43, 34, 28, .15);
+    --accent:   #b84f1b;
+    --accent-s: rgba(184, 79, 27, .10);
+    --travail:  #3f7f3a;
+    --question: #bc3d31;
+    --repos:    #9a6a21;
+    --shadow:   0 1px 2px rgba(43, 34, 28, .06);
+
+    --display: "Bricolage Grotesque", "Trebuchet MS", sans-serif;
+    --body: "Literata", Georgia, "Times New Roman", serif;
+    --mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:   #241c17;
+      --surface:  #2e241d;
+      --sunk:     #1b1511;
+      --ink:      #f4e9dc;
+      --muted:    #b9a894;
+      --rule:     rgba(255, 222, 186, .15);
+      --accent:   #e8743b;
+      --accent-s: rgba(232, 116, 59, .13);
+      --travail:  #8fcf8a;
+      --question: #e0695e;
+      --repos:    #d9a05b;
+      --shadow:   0 1px 2px rgba(0, 0, 0, .3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:   #241c17;
+    --surface:  #2e241d;
+    --sunk:     #1b1511;
+    --ink:      #f4e9dc;
+    --muted:    #b9a894;
+    --rule:     rgba(255, 222, 186, .15);
+    --accent:   #e8743b;
+    --accent-s: rgba(232, 116, 59, .13);
+    --travail:  #8fcf8a;
+    --question: #e0695e;
+    --repos:    #d9a05b;
+    --shadow:   0 1px 2px rgba(0, 0, 0, .3);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 400 17px/1.6 var(--body);
+    font-synthesis-weight: none;
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+  .page { max-width: 46rem; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+  @media (max-width: 40rem) { .page { padding: 2rem 1.1rem 3.5rem; } }
+
+  /* ---- En-tête ---- */
+  .masthead { display: flex; flex-direction: column; gap: 1.1rem;
+    padding-bottom: 1.8rem; border-bottom: 2px solid var(--ink); }
+  .eyebrow { font-family: var(--display); font-weight: 600; font-size: .72rem;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin: 0; }
+  h1 { font-family: var(--display); font-weight: 800; font-size: clamp(2.3rem, 7vw, 3.4rem);
+    line-height: 1.02; letter-spacing: -.02em; margin: 0; text-wrap: balance; }
+  .lede { margin: 0; font-size: 1.12rem; color: var(--muted); max-width: 34rem; }
+
+  /* La légende des pastilles : c'est tout le vocabulaire de la pièce. */
+  .pips { display: flex; flex-wrap: wrap; gap: .5rem 1.4rem; margin: 0; padding: 0; list-style: none; }
+  .pips li { display: flex; align-items: baseline; gap: .5rem;
+    font-family: var(--display); font-weight: 600; font-size: .9rem; }
+  .pip { font-family: var(--body); font-size: 1.05rem; line-height: 1; }
+  .pips .k { color: var(--muted); font-weight: 600; font-size: .78rem;
+    letter-spacing: .06em; text-transform: uppercase; }
+  li[data-st="travail"] .pip  { color: var(--travail); }
+  li[data-st="question"] .pip { color: var(--question); }
+  li[data-st="repos"] .pip    { color: var(--repos); }
+
+  /* ---- Rythme général ---- */
+  section { margin-top: 3.4rem; }
+  h2 { font-family: var(--display); font-weight: 800; font-size: 1.65rem;
+    letter-spacing: -.015em; line-height: 1.15; margin: 0 0 .5rem; text-wrap: balance; }
+  h3 { font-family: var(--display); font-weight: 600; font-size: 1.05rem;
+    margin: 2rem 0 .4rem; letter-spacing: -.005em; }
+  p { margin: 0 0 1rem; }
+  .sub { color: var(--muted); margin: 0 0 1.6rem; }
+  strong { font-weight: 600; }
+  code { font-family: var(--mono); font-size: .86em; background: var(--accent-s);
+    padding: .1em .32em; border-radius: 3px; }
+
+  /* ---- Les deux pistes : une fois sur le serveur, une fois par poste ---- */
+  .track { border-left: 3px solid var(--accent); padding-left: 1.4rem; }
+  .track-tag { font-family: var(--display); font-weight: 600; font-size: .72rem;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--accent);
+    margin: 0 0 .35rem; }
+
+  /* Les étapes sont numérotées parce que l'ordre compte réellement : sans jeton pas
+     d'agent, sans hooks rien ne remonte. */
+  ol.steps { list-style: none; counter-reset: step; margin: 1.8rem 0 0; padding: 0;
+    display: flex; flex-direction: column; gap: 2rem; }
+  ol.steps > li { counter-increment: step; display: grid;
+    grid-template-columns: 2.1rem 1fr; gap: 0 .9rem; align-items: start; }
+  ol.steps > li::before { content: counter(step);
+    font-family: var(--display); font-weight: 800; font-size: 1rem;
+    color: var(--accent); background: var(--accent-s);
+    width: 2.1rem; height: 2.1rem; border-radius: 50%;
+    display: grid; place-items: center; font-variant-numeric: tabular-nums; }
+  ol.steps > li > :first-child { margin-top: .32rem; }
+  ol.steps .t { font-family: var(--display); font-weight: 600; font-size: 1.08rem;
+    margin: .3rem 0 .45rem; }
+  ol.steps > li > * { grid-column: 2; }
+  ol.steps > li::before { grid-column: 1; grid-row: 1 / span 99; }
+
+  /* ---- Blocs de commande ---- */
+  .cmd { position: relative; margin: .8rem 0 0; background: var(--sunk);
+    border: 1px solid var(--rule); border-radius: 7px; }
+  .cmd-head { display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; padding: .4rem .5rem .4rem .85rem; border-bottom: 1px solid var(--rule); }
+  .cmd-where { font-family: var(--display); font-weight: 600; font-size: .68rem;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .cmd pre { margin: 0; padding: .85rem; overflow-x: auto;
+    font-family: var(--mono); font-size: .83rem; line-height: 1.65; }
+  .cmd code { background: none; padding: 0; font-size: inherit; }
+  .copy { font-family: var(--display); font-weight: 600; font-size: .72rem;
+    color: var(--muted); background: none; border: 1px solid var(--rule);
+    border-radius: 5px; padding: .22rem .55rem; cursor: pointer; white-space: nowrap; }
+  .copy:hover { color: var(--accent); border-color: var(--accent); }
+  .copy[data-done="1"] { color: var(--travail); border-color: var(--travail); }
+
+  /* ---- Ce qui quitte le poste : l'avant / après ---- */
+  .swap { display: grid; gap: 1rem; margin-top: 1.4rem; }
+  @media (min-width: 46rem) { .swap { grid-template-columns: 1fr 1fr; } }
+  .swap > div { display: flex; flex-direction: column; min-width: 0; }
+  .swap h4 { font-family: var(--display); font-weight: 600; font-size: .74rem;
+    letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .5rem; }
+  .swap .stays h4 { color: var(--question); }
+  .swap .goes h4  { color: var(--travail); }
+  .swap pre { margin: 0; flex: 1; padding: .85rem; overflow-x: auto;
+    background: var(--sunk); border: 1px solid var(--rule); border-radius: 7px;
+    font-family: var(--mono); font-size: .78rem; line-height: 1.6; }
+  .swap .stays pre { border-left: 3px solid var(--question); }
+  .swap .goes pre  { border-left: 3px solid var(--travail); }
+  .gone { color: var(--question); text-decoration: line-through;
+    text-decoration-thickness: 1px; }
+
+  /* ---- Tableau de dépannage ---- */
+  .tablewrap { overflow-x: auto; margin-top: 1.2rem; }
+  table { border-collapse: collapse; width: 100%; min-width: 30rem; font-size: .94rem; }
+  th, td { text-align: left; vertical-align: top; padding: .7rem .8rem .7rem 0;
+    border-bottom: 1px solid var(--rule); }
+  th { font-family: var(--display); font-weight: 600; font-size: .7rem;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+    border-bottom-color: var(--ink); }
+  td:first-child { width: 38%; }
+  td code { font-size: .8em; }
+
+  /* ---- Encart ---- */
+  .note { margin-top: 1.4rem; padding: .95rem 1.1rem; background: var(--surface);
+    border: 1px solid var(--rule); border-radius: 7px; box-shadow: var(--shadow);
+    font-size: .95rem; }
+  .note p:last-child { margin-bottom: 0; }
+  .note .label { font-family: var(--display); font-weight: 600; font-size: .7rem;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--accent);
+    display: block; margin-bottom: .3rem; }
+
+  ul.plain { margin: 0 0 1rem; padding-left: 1.15rem; }
+  ul.plain li { margin-bottom: .4rem; }
+
+  footer { margin-top: 4rem; padding-top: 1.4rem; border-top: 1px solid var(--rule);
+    color: var(--muted); font-size: .86rem; }
+  footer a { color: inherit; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Procédure d'installation</p>
+    <h1>Installer Claude&nbsp;Office</h1>
+    <p class="lede">Un bureau 3D où l'équipe voit ses sessions Claude Code travailler.
+      Chaque session devient un îlot ; chaque agent, quelqu'un à un bureau.</p>
+    <ul class="pips">
+      <li data-st="travail"><span class="pip">●</span> <span>💼 au travail</span></li>
+      <li data-st="question"><span class="pip">●</span> <span>❓ attend une réponse</span></li>
+      <li data-st="repos"><span class="pip">●</span> <span>☕ au repos</span></li>
+    </ul>
+  </header>
+
+  <section id="vie-privee">
+    <h2>Ce qui quitte ton poste</h2>
+    <p class="sub">La question d'abord, parce que c'est la seule qui compte avant d'installer
+      quoi que ce soit.</p>
+
+    <p>L'agent tourne <strong>sur ton PC</strong>. Il reçoit les événements bruts de Claude Code —
+      prompts, commandes shell, chemins de fichiers — et les réduit à un statut
+      <em>avant</em> que quoi que ce soit ne parte sur le réseau.</p>
+
+    <div class="swap">
+      <div class="stays">
+        <h4>Ce que l'agent reçoit</h4>
+        <pre><code>{
+  "session_id": "68746c1f-4c33-…",
+  <span class="gone">"cwd": "C:\dev\client-confidentiel\paie"</span>,
+  "hook_event_name": "PreToolUse",
+  <span class="gone">"tool_name": "Bash"</span>,
+  <span class="gone">"tool_input": {</span>
+    <span class="gone">"command": "rm -rf /srv/prod"</span>
+  <span class="gone">}</span>,
+  "tool_use_id": "toolu_01DXCt…"
+}</code></pre>
+      </div>
+      <div class="goes">
+        <h4>Ce qui part réellement</h4>
+        <pre><code>{
+  "v": 1,
+  "machine": "remy-pc",
+  "session": "68746c1f",
+  "project": "paie",
+  "event": "PreToolUse",
+  "act": "term",
+  "ref": "toolu_01DXCt…",
+  "ts": 1793874184450
+}</code></pre>
+      </div>
+    </div>
+
+    <h3>Ce qui ne part jamais</h3>
+    <ul class="plain">
+      <li>Le prompt. Jamais, sous aucune forme.</li>
+      <li>La commande shell, le nom de fichier, le motif de recherche.</li>
+      <li>Le chemin complet — seul le dernier segment sort :
+        <code>C:\dev\client-confidentiel\paie</code> devient <code>paie</code>.</li>
+      <li>Le résumé d'une tâche déléguée. Seul le <em>métier</em> de l'agent sort
+        (<code>Explore</code>, <code>Plan</code>) : c'est lui qui peuple l'open space.</li>
+      <li>Le nom d'un serveur MCP. <code>mcp__…_Atlassian_MCP__…</code> devient
+        <code>web</code>, point.</li>
+      <li>Le message d'une demande de permission. On sait que tu es sollicité, pas sur quoi.</li>
+    </ul>
+
+    <p>Ce qui sort d'un outil, c'est sa <strong>catégorie</strong> : <code>read</code>,
+      <code>type</code>, <code>term</code>, <code>web</code>, <code>plan</code>,
+      <code>think</code>, <code>task</code>. De quoi colorer un écran, pas de quoi savoir
+      ce que tu fais.</p>
+
+    <div class="note">
+      <span class="label">Vérifiable</span>
+      <p>Cette liste n'est pas une promesse : <code>node smoke-serveur.mjs</code> rejoue des
+        événements truffés de secrets et cherche chacun d'eux dans ce qui sort. Le test
+        échoue si un seul passe.</p>
+    </div>
+
+    <h3>Et rien n'est stocké</h3>
+    <p>Aucune base de données, aucun journal d'activité. L'état vit en mémoire : on
+      recharge la page, la pièce est vide, et elle se repeuple en moins de dix secondes
+      à partir des postes connectés. La seule chose qui survit à un redémarrage, c'est la
+      liste des <em>métiers</em> d'agents déjà vus — ce sont les employés permanents de
+      l'open space.</p>
+  </section>
+
+  <section id="serveur">
+    <div class="track">
+      <p class="track-tag">À faire une seule fois</p>
+      <h2>Monter le serveur</h2>
+      <p class="sub">Une machine quelque part, que les postes peuvent joindre. Docker, deux
+        commandes.</p>
+
+      <ol class="steps">
+        <li>
+          <p class="t">Tirer un jeton et démarrer</p>
+          <p>Les postes présentent ce jeton pour publier. Garde-le : sans lui, ils ne se
+            connectent pas.</p>
+          <div class="cmd">
+            <div class="cmd-head"><span class="cmd-where">Linux / macOS</span>
+              <button class="copy" type="button">Copier</button></div>
+<pre><code>export OFFICE_TOKEN=$(openssl rand -hex 16)
+echo $OFFICE_TOKEN
+docker compose up -d</code></pre>
+          </div>
+          <div class="cmd">
+            <div class="cmd-head"><span class="cmd-where">Windows · PowerShell</span>
+              <button class="copy" type="button">Copier</button></div>
+<pre><code>$env:OFFICE_TOKEN = -join ((1..32) | % { '{0:x}' -f (Get-Random -Max 16) })
+echo $env:OFFICE_TOKEN
+docker compose up -d</code></pre>
+          </div>
+        </li>
+
+        <li>
+          <p class="t">Vérifier qu'il répond</p>
+          <div class="cmd">
+            <div class="cmd-head"><span class="cmd-where">Terminal</span>
+              <button class="copy" type="button">Copier</button></div>
+<pre><code>curl http://localhost:4317/health</code></pre>
+          </div>
+          <p style="margin-top:.8rem">Attendu : <code>{"ok":true,"v":1,"machines":0}</code>.
+            Le bureau est sur <code>http://&lt;ip-du-serveur&gt;:4317/</code>, et cette page sur
+            <code>/install.html</code> — c'est l'adresse à envoyer aux collègues.</p>
+        </li>
+
+        <li>
+          <p class="t">Si le serveur est sur Internet</p>
+          <p>Sur un LAN, la page reste libre. Dès qu'elle sort, mets un reverse proxy TLS
+            devant, remplis <code>VIEW_PASSWORD</code>, et ne publie pas le port 4317
+            directement.</p>
+        </li>
+      </ol>
+
+      <h3>Les réglages</h3>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Variable</th><th>Rôle</th></tr></thead>
+          <tbody>
+            <tr><td><code>OFFICE_TOKEN</code></td><td>Le jeton des postes. <strong>Obligatoire.</strong>
+              Laissé vide, le serveur en tire un neuf à chaque démarrage et les postes décrochent.</td></tr>
+            <tr><td><code>VIEW_PASSWORD</code></td><td>Mot de passe de la page. Vide = libre
+              (correct sur un LAN). L'identifiant est <code>VIEW_USER</code>, par défaut <code>office</code>.</td></tr>
+            <tr><td><code>CITY</code></td><td>Ville de la météo. C'est le seul appel sortant du
+              serveur, et il n'envoie que le nom de la ville.</td></tr>
+            <tr><td><code>OFFLINE_GRACE</code></td><td>Délai avant de démonter les îlots d'un poste
+              coupé brutalement. 20 s par défaut.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="poste">
+    <div class="track">
+      <p class="track-tag">À faire sur chaque PC</p>
+      <h2>Brancher un poste</h2>
+      <p class="sub">Un exécutable, une commande, et c'est fini. Rien à installer, aucune
+        dépendance.</p>
+
+      <ol class="steps">
+        <li>
+          <p class="t">Poser l'agent</p>
+          <p>Copie <code>claude-office-agent.exe</code> où tu veux — par exemple
+            <code>C:\Outils\claude-office\</code>.</p>
+        </li>
+
+        <li>
+          <p class="t">Le configurer, une fois pour toutes</p>
+          <p><code>-save</code> écrit la configuration dans
+            <code>%APPDATA%\claude-office\agent.json</code>. Ensuite, un double-clic suffit.</p>
+          <div class="cmd">
+            <div class="cmd-head"><span class="cmd-where">PowerShell · dans le dossier de l'agent</span>
+              <button class="copy" type="button">Copier</button></div>
+<pre><code>.\claude-office-agent.exe -server http://ip-du-serveur:4317 -token LE_JETON -save</code></pre>
+          </div>
+          <p style="margin-top:.8rem">Par défaut, l'îlot porte le nom de ta machine.
+            <code>-machine "Bureau de Rémy"</code> pour en choisir un autre.</p>
+        </li>
+
+        <li>
+          <p class="t">Installer les hooks</p>
+          <p>C'est par eux que Claude Code parle à l'agent. Copie le bloc <code>hooks</code> de
+            <code>hooks.json</code> dans <code>~/.claude/settings.json</code> — et fusionne-le
+            avec tes hooks existants si tu en as.</p>
+          <p>Le même fichier vaut pour Windows, macOS et Linux, et il n'y a aucun chemin à
+            adapter : l'agent écoute là où les hooks écrivent déjà.</p>
+        </li>
+
+        <li>
+          <p class="t">Lancer <code>claude</code> normalement</p>
+          <p>Ton îlot apparaît dans le bureau. Il n'y a rien d'autre à faire.</p>
+        </li>
+      </ol>
+
+      <div class="note">
+        <span class="label">Deux bureaux, pas un</span>
+        <p>L'agent sert aussi une vue locale sur <code>http://127.0.0.1:4317/</code>, avec
+          <strong>tout le détail</strong> : noms de fichiers, commandes, prompts. C'est ta
+          machine, ça n'en sort pas. Seul ce qui part vers le serveur est réduit à un statut.
+          Pose <code>index.html</code> à côté de l'exécutable pour que cette vue fonctionne.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="verifier">
+    <h2>Vérifier que ça marche</h2>
+    <p class="sub">Dans cet ordre : le poste, puis le serveur.</p>
+
+    <h3>Sur le poste</h3>
+    <div class="cmd">
+      <div class="cmd-head"><span class="cmd-where">Navigateur ou curl</span>
+        <button class="copy" type="button">Copier</button></div>
+<pre><code>curl http://127.0.0.1:4317/status</code></pre>
+    </div>
+    <p style="margin-top:.8rem">La clé qui compte est <code>flotte.en_ligne</code>. Si elle vaut
+      <code>false</code>, <code>flotte.derniere_erreur</code> nomme le problème.</p>
+
+    <h3>Sur le serveur</h3>
+    <div class="cmd">
+      <div class="cmd-head"><span class="cmd-where">Navigateur ou curl</span>
+        <button class="copy" type="button">Copier</button></div>
+<pre><code>curl http://ip-du-serveur:4317/sessions</code></pre>
+    </div>
+    <p style="margin-top:.8rem">Tu y vois les postes connectés, leurs sessions et les
+      sous-agents au travail. C'est aussi la preuve la plus directe de ce que le serveur sait
+      — et de tout ce qu'il ignore.</p>
+
+    <h3>Comparer les deux vues, côte à côte</h3>
+    <p>Le test qui répond vraiment à « qu'est-ce que mes collègues voient ». Sur une seule
+      machine, deux terminaux — le serveur prend 4318, parce que l'agent occupe 4317, là où
+      pointent les hooks.</p>
+    <div class="cmd">
+      <div class="cmd-head"><span class="cmd-where">Terminal 1 · le serveur</span>
+        <button class="copy" type="button">Copier</button></div>
+<pre><code>$env:OFFICE_TOKEN="test123"; $env:PORT="4318"; node server.js</code></pre>
+    </div>
+    <div class="cmd">
+      <div class="cmd-head"><span class="cmd-where">Terminal 2 · l'agent</span>
+        <button class="copy" type="button">Copier</button></div>
+<pre><code>.\agent\claude-office-agent.exe -server http://127.0.0.1:4318 -token test123</code></pre>
+    </div>
+    <p style="margin-top:.8rem">Puis ouvre les deux pages en vis-à-vis et travaille
+      normalement. À gauche « 📖 lit order.service.ts », à droite « 🔎 cherche ».</p>
+    <div class="tablewrap">
+      <table>
+        <tbody>
+          <tr><td><code>http://localhost:4317/</code></td><td>Vue locale — le détail complet, qui
+            reste sur ta machine</td></tr>
+          <tr><td><code>http://localhost:4318/</code></td><td>Vue flotte — exactement ce que voient
+            les autres</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="essayer">
+    <h2>Essayer sans rien installer</h2>
+    <p class="sub">Pour voir à quoi ça ressemble avant de brancher quoi que ce soit.</p>
+    <div class="cmd">
+      <div class="cmd-head"><span class="cmd-where">Dans le dépôt</span>
+        <button class="copy" type="button">Copier</button></div>
+<pre><code>node server.js</code></pre>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Adresse</th><th>Ce que ça montre</th></tr></thead>
+        <tbody>
+          <tr><td><code>/?demo=20</code></td><td>Le plateau plein : 20 îlots, les pastilles d'état,
+            la caméra qui dézoome</td></tr>
+          <tr><td><code>/?demo=4</code></td><td>Peu de sessions — les îlots se groupent au centre
+            plutôt que de s'éparpiller</td></tr>
+          <tr><td><code>/?demo=20&amp;hour=22</code></td><td>Le même plateau de nuit, vingt
+            suspensions allumées. C'est le cas le plus lourd : regarde si ça rame.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:1.2rem">Un clic sur un îlot cadre la caméra dessus et rend les bulles
+      complètes. <kbd>Échap</kbd> referme le panneau.</p>
+  </section>
+
+  <section id="depannage">
+    <h2>Si ça ne marche pas</h2>
+    <p class="sub">Les quatre pannes qu'on rencontre réellement.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Symptôme</th><th>Cause et remède</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Mon îlot n'apparaît pas, et <code>/status</code> dit
+              <code>en_ligne: false</code></td>
+            <td>Lis <code>derniere_erreur</code>. « a répondu 401 » = jeton refusé ou nom de
+              poste invalide. Sinon, c'est le serveur qui n'est pas joignable : pare-feu,
+              mauvaise IP.</td>
+          </tr>
+          <tr>
+            <td><code>/status</code> dit <code>en_ligne: true</code>, mais <code>sessions: 0</code></td>
+            <td>Les hooks ne sont pas installés. Vérifie que le bloc <code>hooks</code> est bien
+              dans <code>~/.claude/settings.json</code>, et relance <code>claude</code>.</td>
+          </tr>
+          <tr>
+            <td>« écoute locale impossible sur 127.0.0.1:4317 »</td>
+            <td>Le port est déjà pris — un <code>server.js</code> ou un autre agent tourne déjà.
+              Arrête-le, ou donne un autre port à l'agent avec <code>-port</code>.</td>
+          </tr>
+          <tr>
+            <td>Un poste éteint reste affiché un moment</td>
+            <td>C'est voulu. Une coupure brutale laisse 20 s de grâce, pour qu'un hoquet de wifi
+              ne fasse pas disparaître puis réapparaître tout le plateau. Un arrêt propre de
+              l'agent, lui, démonte ses îlots tout de suite.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <p>Protocole v1 · L'agent et le serveur doivent partager la même version.
+      <code>/sessions</code> l'affiche.</p>
+  </footer>
+</main>
+
+<script>
+  // Les commandes sont faites pour être collées : autant éviter la sélection à la souris
+  // dans un bloc qui défile horizontalement.
+  for (const btn of document.querySelectorAll('.copy')) {
+    btn.addEventListener('click', async () => {
+      const code = btn.closest('.cmd').querySelector('code');
+      try {
+        await navigator.clipboard.writeText(code.textContent.trim());
+        btn.textContent = 'Copié';
+        btn.dataset.done = '1';
+      } catch {
+        // Presse-papiers refusé (page non sécurisée, permission) : on sélectionne le
+        // texte, ce qui laisse au moins un Ctrl+C à portée.
+        const r = document.createRange();
+        r.selectNodeContents(code);
+        const s = getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+        btn.textContent = 'Ctrl+C';
+      }
+      setTimeout(() => { btn.textContent = 'Copier'; delete btn.dataset.done; }, 2000);
+    });
+  }
+</script>
+</body>
+</html>
