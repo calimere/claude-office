@@ -168,7 +168,9 @@ src = src.replace(/^\s*import .*?;\s*$/gm, '');
 // plutot que de recopier des coordonnees dans le test, ou elles divergeraient.
 src += '\n;globalThis.__plan = { ROOM, POD_X, POD_Z, AISLES, aisleFor, NAV,'
   + ' COFFEE, RACK_Z, STAND_SPOTS, COFFEE_SPOTS, DOOR };'
-  + '\n;globalThis.__vie = { sessions, applyEndOfDay, applyBlockPause, USAGE, handle };';
+  + '\n;globalThis.__vie = { sessions, applyEndOfDay, applyBlockPause, USAGE, handle };'
+  + '\n;globalThis.__cam = () => ({ cible: { x: camTarget.x, z: camTarget.z }, span: camSpan,'
+  + ' ilots: [...pods].map((p) => ({ x: p.slot.x, z: p.slot.z })) });';
 
 let bad = 0;
 const check = (ok, m) => { console.log((ok ? 'OK   ' : 'ECHEC') + '  ' + m); if (!ok) bad++; };
@@ -381,6 +383,60 @@ if (!STREAM) {
     // Le matin, ou des qu on repond, tout le monde revient.
     vie.applyEndOfDay(10);
     check(!s.deserte && gens().every((a) => !a.home), 'au matin, ils reviennent');
+  }
+}
+
+/* ---------- Le cadrage ---------- */
+// Une camera qui ne montre pas les ilots occupes ne sert a rien, et c est le genre
+// de chose qu une capture d ecran laisse passer : on voit une belle piece, sans
+// remarquer que deux sessions sur vingt sont hors champ. En isometrique, un point
+// (x, z) monte a l ecran de -(x+z)/racine(6) et se decale de (x-z)/racine(2).
+{
+  const cam = globalThis.__cam;
+  const vie = globalThis.__vie;
+  if (!cam || !vie || !STREAM) {
+    check(false, 'le cadrage est inspectable depuis le test');
+  } else {
+    const HALF = 3.05, R6 = Math.sqrt(6), R2 = Math.sqrt(2);
+    const aspect = globalThis.innerWidth / globalThis.innerHeight;
+
+    const horsChamp = () => {
+      const c = cam();
+      const su = (x, z) => -(x + z) / R6, sr = (x, z) => (x - z) / R2;
+      const cu = su(c.cible.x, c.cible.z), cr = sr(c.cible.x, c.cible.z);
+      const dehors = [];
+      for (const p of c.ilots) {
+        for (const dx of [-HALF, HALF]) {
+          for (const dz of [-HALF, HALF]) {
+            const x = p.x + dx, z = p.z + dz;
+            if (Math.abs(su(x, z) - cu) > c.span || Math.abs(sr(x, z) - cr) > c.span * aspect) {
+              dehors.push(p.x + ',' + p.z);
+            }
+          }
+        }
+      }
+      return { dehors: [...new Set(dehors)], span: c.span, cible: c.cible };
+    };
+
+
+    // On ferme tout ce que les blocs precedents ont ouvert : le cadrage depend du
+    // NOMBRE d ilots, donc il faut partir d une piece vide.
+    for (const sid of [...vie.sessions.keys()]) {
+      STREAM.deliver({ session_id: sid, hook_event_name: 'SessionEnd' });
+    }
+
+    for (const n of [1, 2, 3, 6, 20]) {
+      for (let i = 0; i < n; i++) {
+        STREAM.deliver({ session_id: 'cadre-' + n + '-' + i, machine: 'poste-c', fleet: true,
+          cwd: 'projet' + i, hook_event_name: 'SessionStart' });
+      }
+      const r = horsChamp();
+      check(r.dehors.length === 0,
+        'a ' + n + ' ilot' + (n > 1 ? 's' : '') + ', tous sont dans le cadre', r);
+      for (let i = 0; i < n; i++) {
+        STREAM.deliver({ session_id: 'cadre-' + n + '-' + i, hook_event_name: 'SessionEnd' });
+      }
+    }
   }
 }
 

@@ -1608,15 +1608,15 @@ function framePods() {
   // ajoute la taille d'un ilot (6,1 × 6,3) a l'etendue des CENTRES, puis on cale la
   // droite sur les deux cas connus : un ilot seul tenait a 8,5, six a 21.
   camSpan = Math.max(8.5, .52 * ((x1 - x0 + 6.1) + (z1 - z0 + 6.3)) + 2.05);
-  // Le cadre ne doit pas deborder des murs, sinon la camera regarde le vide a cote
-  // de la piece au lieu de la piece — ce qui arrive des que les ilots occupes ne
-  // sont pas au centre d'une piece devenue bien plus grande qu'eux. Et quand le
-  // cadre est plus grand que la piece, il n'y a plus rien a cadrer qu'elle.
-  const m = camSpan * .62;
-  const fit = (v, lo, hi, mid) => (lo > hi ? mid : Math.min(hi, Math.max(lo, v)));
-  camTarget.set(
-    fit((x0 + x1) / 2, -ROOM.w / 2 + m, ROOM.w / 2 - m, 0), 0,
-    fit((z0 + z1) / 2, ROOM.back + m, ROOM.front - m, ROOM.cz));
+  // Plus le cadre est large, plus il doit regarder le centre de la PIECE plutot que
+  // celui des ilots. Sans ce glissement, trois sessions dans une piece de vingt
+  // places font cadrer un coin : le parquet sort du champ et l'ecran est a moitie
+  // noir. A pleine charge les deux centres se confondent, et le melange ne se voit
+  // pas. En isometrique, la piece occupe (w + d) / racine(6) de hauteur a l'ecran.
+  const spanPiece = (ROOM.w + ROOM.d) / Math.sqrt(6) / 2;
+  const k = clamp01(camSpan / spanPiece);
+  const vers = (a, b) => a + (b - a) * k;
+  camTarget.set(vers((x0 + x1) / 2, 0), 0, vers((z0 + z1) / 2, ROOM.cz));
   resize();
 }
 
@@ -2291,6 +2291,9 @@ class Agent {
 // Lectures et ecritures du DOM sont separees en deux boucles : les melanger forcerait
 // un recalcul de mise en page du navigateur a chaque etiquette, a chaque frame.
 const LABEL_GAP = 4;
+// Glissement maximal d'une étiquette désempilée, en pixels. Environ deux hauteurs
+// d'étiquette : au-delà, on ne sait plus à qui elle appartient.
+const LABEL_MAX_DROP = 90;
 function layoutLabels() {
   const list = [];
   for (const a of agents) { a.projectLabel(); list.push(a); }
@@ -2320,6 +2323,11 @@ function layoutLabels() {
       }
       if (!moved) break;
     }
+    // Le désempilement a une limite. Au-delà, l'étiquette a tellement glissé qu'elle
+    // ne désigne plus personne — à pleine charge la cascade descendait sous le
+    // plancher, en colonne. Mieux vaut deux étiquettes qui se recouvrent, chacune sur
+    // la bonne tête, qu'une colonne lisible qui ne dit plus de qui elle parle.
+    if (y - a.ly > LABEL_MAX_DROP) y = a.ly;
     placed.push({ x0, x1, y, h: a.lh });
     a.el.style.left = a.lx + 'px';
     a.el.style.top = y + 'px';
