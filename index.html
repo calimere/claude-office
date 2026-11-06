@@ -139,7 +139,10 @@ let COFFEE_SEC = Number(params.get('coffee')) || 300;
 /* ---------- Scène ---------- */
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x2b221c);
-scene.fog = new THREE.Fog(0x2b221c, 30, 62); // adoucit les bords de la pièce
+// Pas de brouillard. Il y en avait un (30 → 62) pour adoucir les bords d'une pièce
+// de 30 × 22, où ces distances tombaient au-delà des murs. Dans une pièce de 46 × 37
+// il commençait au milieu de l'open space et noyait le fond du plateau : le remède
+// est devenu la maladie. Une pièce qu'on regarde en entier n'a pas de lointain.
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
@@ -676,16 +679,68 @@ for (let x = wallL(2.8); x < LOUNGE_X - 3.6; x += 1.4) {
   });
 }
 
+/* ---------- La table du midi ---------- */
+// Entre le salon et le coin cafe, la bande avant etait vide sur quatorze unites.
+// Une grande table et ses chaises : c'est le seul meuble de la piece qui ne serve
+// qu'a une heure precise.
+// La bande avant ne fait que 3,3 entre le dernier ilot et le mur : une table avec
+// des chaises des DEUX cotes y tiendrait a dix centimetres pres, et fermerait le
+// passage. Une seule rangee de chaises, cote ilots, comme a une table de cantine —
+// on mange cote a cote, face a la baie.
+const LUNCH_X = 10.2, LUNCH_Z = wallF(1.1), LUNCH_CHAISE_Z = LUNCH_Z - 1.25;
+const lunchTop = box(5.2, .1, 1.3, 0xa5784f); lunchTop.position.set(LUNCH_X, .78, LUNCH_Z);
+scene.add(lunchTop);
+for (const dx of [-2.3, 2.3]) {
+  for (const dz of [-.45, .45]) {
+    const p = box(.12, .78, .12, 0x6b4e35); p.position.set(LUNCH_X + dx, .39, LUNCH_Z + dz);
+    scene.add(p);
+  }
+}
+const LUNCH_SPOTS = [];
+for (const dx of [-2.0, -1.0, 0, 1.0, 2.0]) {
+  const assise = box(.5, .08, .5, 0x7a5a4c);
+  assise.position.set(LUNCH_X + dx, .46, LUNCH_CHAISE_Z); scene.add(assise);
+  const dossier = box(.5, .5, .07, 0x7a5a4c);
+  dossier.position.set(LUNCH_X + dx, .72, LUNCH_CHAISE_Z - .23); scene.add(dossier);
+  for (const [lx, lz] of [[-.2, -.2], [.2, -.2], [-.2, .2], [.2, .2]]) {
+    const l = box(.06, .44, .06, 0x5c4436);
+    l.position.set(LUNCH_X + dx + lx, .22, LUNCH_CHAISE_Z + lz); scene.add(l);
+  }
+  LUNCH_SPOTS.push({
+    pos: new V3(LUNCH_X + dx, 0, LUNCH_CHAISE_Z), kind: 'lunch', busy: false,
+    // Tourne vers la table : atan2(moi - cible), comme partout ailleurs ici.
+    face: Math.atan2(0, LUNCH_CHAISE_Z - LUNCH_Z),
+  });
+}
+// Quelques assiettes, pour que la table ne soit pas nue quand personne n'y est.
+for (const dx of [-2.0, 0, 2.0]) {
+  const a = new THREE.Mesh(new THREE.CylinderGeometry(.22, .18, .04, 14),
+    new THREE.MeshStandardMaterial({ color: 0xeee6d8, roughness: .5 }));
+  a.position.set(LUNCH_X + dx, .85, LUNCH_Z - .2); a.castShadow = true; scene.add(a);
+}
+
+// Heure courante, tenue a jour par la boucle de rendu. claimLeisure() en a besoin
+// pour savoir si c'est l'heure de manger, et elle est appelee hors de la boucle.
+let HEURE = 9;
+const MIDI = [12, 14];
+
 // Une place libre pour un employe desoeuvre. On evite de lui rendre l'occupation
-// qu'il vient de quitter, sinon il se rassoit exactement la ou il etait. Le canape
-// passe avant le bar, et les places debout ne servent qu'en dernier recours.
+// qu'il vient de quitter, sinon il se rassoit exactement la ou il etait.
+//
+// Entre midi et deux, la table passe devant tout le reste : c'est l'heure, et un
+// bureau ou l'on dejeune debout au distributeur est un bureau triste. Ceux qui
+// TRAVAILLENT ne sont pas concernes — on ne les leve pas de leur poste, pas plus
+// qu'a dix-huit heures.
 function claimLeisure(avoid) {
   const seated = avoid === 'couch' ? [COFFEE_SPOTS, COUCH_SPOTS] : [COUCH_SPOTS, COFFEE_SPOTS];
-  for (const pool of [...seated, STAND_SPOTS]) {
+  const pools = HEURE >= MIDI[0] && HEURE < MIDI[1]
+    ? [LUNCH_SPOTS, ...seated, STAND_SPOTS]
+    : [...seated, STAND_SPOTS];
+  for (const pool of pools) {
     const k = pool.find((p) => !p.busy);
     if (k) { k.busy = true; return k; }
   }
-  return null; // 13 places prises : l'employe reste la ou il est
+  return null; // tout est pris : l'employe reste la ou il est
 }
 
 // Tapis : epouse la bande, sans glisser sous les cloisons (paroi droite en x = 12,05).
@@ -1182,7 +1237,8 @@ function makeDesk(parent, x, z) {
     new THREE.MeshStandardMaterial({ color: 0xe9ddcb, roughness: .6 }));
   mug.position.set(.78, 1.01, .18); mug.castShadow = true; g.add(mug); // tasse oubliée sur le bureau
   return {
-    busy: false, seat: new V3(x, 0, z + .8),
+    // `g` sert a defaire le bureau : un ilot dont l'equipe retrecit rend ses places.
+    busy: false, g, seat: new V3(x, 0, z + .8),
     setScreen(act, t) {
       if (!act) { screenMat.emissive.setHex(0x0b0e14); screenMat.emissiveIntensity = 1; return; }
       screenMat.emissive.setHex(SCREEN[act] ?? 0x2a3a55);
@@ -1211,8 +1267,12 @@ let navGrid = null; // Uint8Array, 1 = bloque
 function invalidateNav() { navGrid = null; }
 
 // [centre x, centre z, largeur, profondeur, marge ?]
+// Les meubles que la navigation doit contourner. Chacun est donne par la MEME
+// expression que l'objet qu'il represente : ecrits en dur, ils restaient a leur
+// ancienne place quand la piece s'agrandissait — la grille evitait alors des meubles
+// fantomes et laissait traverser les vrais, sans que rien ne le signale.
 const STATIC_OBSTACLES = [
-  [10.6, 9.6, 1.34, 2.74],                // comptoir et machine
+  [wallR(4.4), COFFEE.z, 1.34, 2.74],     // comptoir et machine
   [COFFEE.x, COFFEE.z, .9, 2.6],          // mange-debout
   // Canape et table basse : marge mince. La voie qui les separe (z = 9,35) ne fait
   // que 35 cm — c'est par elle qu'on gagne sa place. Une marge pleine la fermerait.
@@ -1220,7 +1280,12 @@ const STATIC_OBSTACLES = [
   [LOUNGE_X, 9.85, 1.7, .7, .05],
   [LOUNGE_X, TV_Z, 2.0, .52],             // televiseur et console
   [RACK_X, RACK_Z, 3.65, .85],            // les trois armoires de la baie
-  [6.0, -10.3, .85, .85], [-13.9, -9.6, .68, .68], [-7.4, 10.6, .58, .58], // plantes
+  // Table du midi. Les chaises sont a 1,25 du centre, le plateau fait 0,65 de
+  // demi-profondeur : avec la marge de 0,22 de la grille, elles restent accessibles.
+  [LUNCH_X, LUNCH_Z, 5.2, 1.3],
+  [wallR(17.0), wallB(1.7), .85, .85],    // plantes
+  [wallL(2.1), wallB(1.4), .68, .68],
+  [-7.4, wallF(.4), .58, .58],
 ];
 
 function buildNav() {
@@ -1238,9 +1303,11 @@ function buildNav() {
   for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++)
     if (i < band || j < band || i >= cols - band || j >= rows - band) g[j * cols + i] = 1;
   for (const o of STATIC_OBSTACLES) mark(...o);
+  // Plus de cloisons a contourner : seuls les bureaux bloquent. L'ancienne version
+  // marquait aussi les trois panneaux, avec `open = z < 0 ? 1 : -1` — la regle
+  // d'avant les quatre rangees. Pour la rangee z = -12, le fond etait donc marque
+  // du MAUVAIS cote : la grille fermait l'ouverture et ouvrait le fond.
   for (const p of pods) {
-    const { x, z } = p.slot, open = z < 0 ? 1 : -1;
-    mark(x - 3.05, z, .1, 6.2); mark(x + 3.05, z, .1, 6.2); mark(x, z - 3.05 * open, 6.2, .1);
     // Plateau du bureau ; l'assise est a +0,8 en z, donc le centre du plateau a -0,8.
     for (const d of p.desks) mark(d.seat.x, d.seat.z - .8, 2.2, 1.1);
   }
@@ -1387,7 +1454,10 @@ const AISLES = [0, -16.5];
 const aisleFor = (z) => AISLES.reduce((a, b) => (Math.abs(b - z) < Math.abs(a - z) ? b : a));
 // Bureaux d'un ilot. L'ordre d'attribution est recalcule par ilot (cote ouvert
 // d'abord), si bien que le lead s'assoit toujours face a l'allee.
-const POD_SEATS = [[-1.6, 1.6], [-1.6, -1.6], [1.6, -1.6], [1.6, 1.6]];
+// Nombre maximal de bureaux par ilot. Limite d'emprise au sol : avec des colonnes
+// espacees de 7,5 et des rangees de 7,5 a 9, une troisieme rangee mordrait sur le
+// voisin. Au-dela, deux agents partagent le dernier bureau.
+const POD_MAX_DESKS = 4;
 // Couleur d'identite d'un projet : tapis, abat-jour, liseres, cadre du panneau et
 // pastille du panneau Sessions. Terre cuite, sauge, bleu poussiereux, moutarde,
 // prune, canard.
@@ -1467,12 +1537,17 @@ class Pod {
     this.g = new THREE.Group(); scene.add(this.g);
 
     // Tapis : liseré à la couleur du projet, laine teintée au centre
-    const edge = box(6.1, .04, 6.3, tint, { roughness: 1 });
+    const edge = box(1, .04, 1, tint, { roughness: 1 });
     edge.position.set(x, .02, z); edge.castShadow = false; this.g.add(edge);
+    this.edge = edge;
+    // Tapis et lisere sont des boites UNITAIRES qu'on met a l'echelle : l'ilot change
+    // de taille a chaque arrivee ou depart, et refaire une geometrie a chaque fois
+    // couterait plus cher que de redimensionner celle qui existe.
     const inner = new THREE.Color(0x5a4336).lerp(new THREE.Color(tint), .45);
-    const rug = box(5.8, .05, 6.0, inner, { roughness: 1 });
+    const rug = box(1, .05, 1, inner, { roughness: 1 });
     rug.position.set(x, .045, z); rug.castShadow = false;
     rug.userData.pod = this; this.g.add(rug);
+    this.rug = rug;
 
     // Suspension au-dessus de l'îlot : c'est elle qui donne le halo chaud. Toutes ses
     // pièces sont réunies dans un groupe ancré au plafond (y = 4,5), parce qu'une
@@ -1492,22 +1567,15 @@ class Pod {
     lampLight.position.set(0, -1.7, 0); this.lamp.add(lampLight);
     this.lampLight = lampLight; this.bulb = bulb; // pilotes par le cycle jour/nuit
 
-    // Cloisons : bois en bas, verre dépoli en haut. Trois côtés ; l'îlot s'ouvre sur
-    // l'allée centrale, par où tout le monde entre et sort.
+    // Plus de cloisons. Elles disaient « une équipe de quatre » quel que soit
+    // l'effectif réel : une session seule occupait quand même quatre places, et une
+    // équipe de plus de quatre débordait en s'entassant à deux par bureau. Une boîte
+    // de taille fixe ne pouvait mentir que dans un sens ou dans l'autre.
+    //
+    // C'est le tapis qui porte l'identité de l'équipe désormais — sa couleur et sa
+    // descente de lit — et il se dimensionne sur le nombre de gens réellement là.
     const open = aisleFor(z) > z ? 1 : -1; // sens de l'ouverture : vers SON allée
-    const panel = (px, pz, w, d) => {
-      const base = box(w, .78, d, 0x6d4b33); base.position.set(px, .39, pz); this.g.add(base);
-      const glass = new THREE.Mesh(new THREE.BoxGeometry(w, .72, d),
-        new THREE.MeshStandardMaterial({
-          color: 0xd6e4e6, transparent: true, opacity: .2, roughness: .15,
-        }));
-      glass.position.set(px, 1.16, pz); this.g.add(glass);
-      const rail = box(w + .06, .07, d + .06, shade(tint, -.3));
-      rail.position.set(px, 1.55, pz); this.g.add(rail);
-    };
-    panel(x - 3.05, z, .1, 6.2);          // côté gauche
-    panel(x + 3.05, z, .1, 6.2);          // côté droit
-    panel(x, z - 3.05 * open, 6.2, .1);   // fond, à l'opposé de l'allée
+    this.open = open;
 
     // Descente de lit devant l'ouverture, entre le portillon et l'allée : elle porte
     // le nom du projet. Posee au ras du sol, a l'exterieur du grand tapis de l'ilot.
@@ -1528,19 +1596,69 @@ class Pod {
     // la suspension faisait quarante lumieres dynamiques dans la scene — chaque
     // fragment du decor les parcourait toutes, y compris les trente-neuf eteintes.
 
-    // Point d'entrée dans l'allée, devant l'ouverture
-    this.gate = new V3(x, 0, z + 3.5 * open);
+    // Le point d'entrée dans l'allée est pose par fitRug() : il suit le bord du
+    // tapis, qui bouge avec l'effectif.
 
-    // Côté ouvert en premier : le lead, servi d'abord, s'assoit face à l'allée dans
-    // les deux rangées — sinon il tourne le dos au spectateur dans l'une des deux.
-    const seats = [...POD_SEATS].sort((a, b) => (b[1] - a[1]) * open);
-    this.desks = seats.map(([dx, dz]) => makeDesk(this.g, x + dx, z + dz));
+    // Un seul bureau au départ : une session commence toujours par son lead seul.
+    // Les autres s'ajoutent quand des agents arrivent.
+    this.desks = [];
+    this.addDesk();
     pods.add(this); invalidateNav(); framePods();
   }
-  // Au-delà de 4 agents l'îlot est plein : on double sur le dernier bureau plutôt
-  // que de déborder sur un autre projet. D'où le comptage d'occupants.
+
+  // Un bureau de plus, posé à la suite. Les positions déjà attribuées ne bougent
+  // JAMAIS : un employé assis ne doit pas glisser parce qu'un collègue arrive. D'où
+  // des bureaux qu'on ajoute et retire par la fin, et jamais par le milieu.
+  //
+  // Côté ouvert en premier : le lead, servi d'abord, s'assoit face à l'allée dans
+  // les deux rangées — sinon il tourne le dos au spectateur dans l'une des deux.
+  addDesk() {
+    const i = this.desks.length;
+    const col = i % 2 ? 1.6 : -1.6, rang = (i / 2) | 0;
+    const d = makeDesk(this.g, this.slot.x + col, this.slot.z + this.open * (1.6 - 3.2 * rang));
+    this.desks.push(d);
+    this.fitRug();
+    invalidateNav();
+    return d;
+  }
+
+  // Le tapis épouse les bureaux posés. Une colonne pour une personne, deux au-delà ;
+  // une rangée par paire. L'îlot grandit et rétrécit avec l'équipe, ce qui est tout
+  // l'objet de la manœuvre.
+  fitRug() {
+    const n = Math.max(1, this.desks.length);
+    const cols = Math.min(2, n), rangs = Math.ceil(n / 2);
+    const w = cols === 2 ? 5.8 : 3.6;
+    // Le -0,3 rend a l'ilot a deux rangees exactement sa profondeur d'origine (6,1).
+    // Sans lui il gagnait 15 cm, qu'il prenait a la bande avant — et la bande avant
+    // n'en a pas a donner : elle fait 3,3 entre le dernier ilot et le mur.
+    const d = rangs * 3.2 - .3;
+    // Centre des bureaux posés : une seule colonne est décalée, deux sont centrées.
+    const cx = this.slot.x + (cols === 2 ? 0 : -1.6);
+    const cz = this.slot.z + this.open * (1.6 - 1.6 * (rangs - 1));
+    this.rug.scale.set(w - .3, 1, d - .3);
+    this.rug.position.set(cx, .045, cz);
+    this.edge.scale.set(w, 1, d);
+    this.edge.position.set(cx, .02, cz);
+    // Moitiés réelles de l'emprise au sol de l'îlot, telle qu'elle est dessinée.
+    this.half = { x: w / 2, z: d / 2, cx, cz };
+    // La descente de lit et le portillon restent devant l'ouverture, alignés sur le
+    // bord du tapis — qui vient de bouger.
+    if (this.mat) this.mat.position.set(cx, .04, cz + this.open * (d / 2 + 1.1));
+    this.gate = new V3(cx, 0, cz + this.open * (d / 2 + .4));
+  }
+  // Une place de plus quand il le faut : l'îlot pousse un bureau plutôt que de
+  // prétendre en avoir quatre depuis le début.
+  //
+  // PLAFOND À QUATRE, et c'est une limite d'emprise au sol, pas de code : les
+  // colonnes de la grille sont espacées de 7,5 et les rangées de 7,5 à 9 — une
+  // troisième rangée de bureaux mordrait sur l'îlot voisin. Au-delà de quatre, on
+  // double donc sur le dernier bureau, comme avant. Pour faire mieux il faudrait
+  // qu'une grande équipe réserve un second emplacement.
   claimDesk() {
-    const d = this.desks.find((k) => !k.busy) ?? this.desks[this.desks.length - 1];
+    const libre = this.desks.find((k) => !k.busy);
+    if (libre) { libre.busy = true; libre.occupants = (libre.occupants || 0) + 1; return libre; }
+    const d = this.desks.length < POD_MAX_DESKS ? this.addDesk() : this.desks[this.desks.length - 1];
     d.busy = true; d.occupants = (d.occupants || 0) + 1; return d;
   }
   // La suspension suit le cycle du jour, mais aussi l'etat de l'ilot : tamisee
@@ -1568,7 +1686,19 @@ class Pod {
     placeBeaconLight();
   }
   releaseDesk(d) {
-    if ((d.occupants = (d.occupants || 1) - 1) <= 0) { d.busy = false; d.setScreen(null); }
+    if ((d.occupants = (d.occupants || 1) - 1) > 0) return;
+    d.busy = false; d.setScreen(null);
+    // L'équipe a rétréci : on rend les bureaux vides de la FIN. Jamais ceux du
+    // milieu — leurs voisins glisseraient d'une place, et on verrait des gens
+    // assis se téléporter. Le premier ne part pas : un îlot sans bureau n'existe pas.
+    let rendu = false;
+    while (this.desks.length > 1 && !this.desks[this.desks.length - 1].busy) {
+      const mort = this.desks.pop();
+      this.g.remove(mort.g);
+      mort.g.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+      rendu = true;
+    }
+    if (rendu) this.fitRug();
   }
   // Session terminée : on attend que les sous-agents aient franchi la porte, puis
   // le lead s'efface sur place (il ne sort jamais) et l'îlot est démonté.
@@ -2200,6 +2330,13 @@ class Agent {
         if (this.state === 'walkin') {
           this.state = 'work';
           if (this.act === 'walk') this.set('think', this.task ? '💭 ' + trunc(this.task, 34) : '💭 prêt');
+        } else if (this.state === 'tobrief') {
+          this.state = 'briefing';
+          this.briefUntil = t + 2.2;
+          const s = this.briefAt;
+          this.faceAngle = s && s.desk
+            ? Math.atan2(g.position.x - s.desk.seat.x, g.position.z - s.desk.seat.z) : 0;
+          this.set('think', '💬 brieffe ' + (s ? s.name : ''));
         } else if (this.state === 'gohome') {
           // Arrive a la porte : on s'efface. Le bureau reste reserve.
           this.state = 'away';
@@ -2223,10 +2360,39 @@ class Agent {
       }
       return;
     }
+    // Le briefing est fini : on retourne tenir le poste.
+    if (this.state === 'briefing' && t >= this.briefUntil) {
+      this.briefCool = t + 14; // on ne refait pas l'aller-retour pour chaque délégation
+      this.briefAt = null;
+      this.state = 'walkin';
+      this.path = this.toDesk();
+      this.set('walk', '🚶 retourne à son poste');
+      return;
+    }
+    // Un agent vient d'être affecté : le lead va lui expliquer, puis reviendra.
+    if (this.state === 'work' && this.briefTarget) {
+      const sub = this.briefTarget;
+      this.briefTarget = null;
+      if (sub.pod === this.pod && sub.desk && t >= (this.briefCool ?? 0)) {
+        // On se place du côté extérieur du bureau, pour ne pas s'asseoir dessus.
+        const p = sub.desk.seat.clone();
+        p.x += p.x > this.pod.slot.x ? 1.0 : -1.0;
+        this.briefAt = sub;
+        this.state = 'tobrief';
+        this.path = this.routeTo(p);
+        this.set('walk', '🚶 va briefer ' + sub.name);
+        return;
+      }
+    }
     // Immobile : assis au poste, debout au mange-debout, ou vautré sur le canapé.
+    // Assis : le canape et les chaises de la table. Debout : le mange-debout et
+    // les places de discussion. Sans ca, on dejeunerait debout devant sa chaise.
+    const assis = this.state === 'leisure'
+      && (this.spot?.kind === 'couch' || this.spot?.kind === 'lunch');
     const onCouch = this.state === 'leisure' && this.spot?.kind === 'couch';
-    const standing = this.state === 'coffee' || (this.state === 'leisure' && !onCouch);
-    const resting = standing || onCouch;
+    const standing = this.state === 'coffee' || this.state === 'briefing'
+      || (this.state === 'leisure' && !assis);
+    const resting = standing || assis;
     // Le lead rentre tenir son poste quand sa pause s'achève ; un employé, lui, ne
     // rentre nulle part — il change juste d'occupation.
     // Une pause SUBIE ne s'achève pas toute seule : elle dure tant que le poste se
@@ -2390,6 +2556,7 @@ const LEISURE_ACT = {
   couch: ['game', '🎮 joue à la console'],
   coffee: ['coffee', '☕ au mange-debout'],
   stand: ['idle', '🧍 discute près du salon'],
+  lunch: ['coffee', '🍽️ déjeune'],
 };
 
 // Reconstitue un employé que le serveur a gardé en mémoire. Il était déjà dans la
@@ -2534,6 +2701,11 @@ function handle(ev) {
         }
         sub.toolUseId = ev.tool_use_id; s.subs.push(sub);
         s.main.set('think', '👉 délègue à ' + type);
+        // L'orchestrateur ne délègue plus depuis sa chaise : il se lève et va
+        // expliquer. C'est le moment le plus lisible de la vie d'une session — on
+        // voit la consigne passer d'une tête à l'autre. Il garde son bureau et y
+        // revient : il tient le poste, briefing ou pas.
+        s.main.briefTarget = sub;
       } else {
         who = whoFor(s, ev);
         // En mode flotte, le poste n'a envoyé que l'activité : le libellé arrive tout
@@ -3289,6 +3461,7 @@ renderer.setAnimationLoop(() => {
   // L'heure avance en continu. On ne recalcule l'eclairage que quatre fois par
   // seconde — sauf en horloge acceleree, ou il faut suivre image par image.
   const hour = nowHours(t);
+  HEURE = hour; // lue par claimLeisure(), qui decide de l'heure du repas
   if (CLOCK_SPEED > 0 || t - dayLast > .25) { applyDaylight(hour); applyEndOfDay(hour); dayLast = t; }
 
   // Le dehors n'est redessine que s'il bouge : pluie, neige et nuages a 10 images

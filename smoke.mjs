@@ -167,13 +167,22 @@ src = src.replace(/^\s*import .*?;\s*$/gm, '');
 // ajoute un epilogue qui expose les constantes de plan dont le test a besoin —
 // plutot que de recopier des coordonnees dans le test, ou elles divergeraient.
 src += '\n;globalThis.__plan = { ROOM, POD_X, POD_Z, AISLES, aisleFor, NAV,'
-  + ' COFFEE, RACK_Z, STAND_SPOTS, COFFEE_SPOTS, DOOR };'
+  + ' COFFEE, RACK_Z, STAND_SPOTS, COFFEE_SPOTS, DOOR, LUNCH_Z, LUNCH_CHAISE_Z };'
   + '\n;globalThis.__vie = { sessions, applyEndOfDay, applyBlockPause, USAGE, handle };'
+  + '\n;globalThis.__midi = { claimLeisure, LUNCH_SPOTS, poser: (h) => { HEURE = h; } };'
+  + '\n;globalThis.__places = { COFFEE_SPOTS, COUCH_SPOTS, STAND_SPOTS, LUNCH_SPOTS,'
+  + ' buildNav, navCell, DOOR };'
   + '\n;globalThis.__cam = () => ({ cible: { x: camTarget.x, z: camTarget.z }, span: camSpan,'
   + ' ilots: [...pods].map((p) => ({ x: p.slot.x, z: p.slot.z })) });';
 
 let bad = 0;
-const check = (ok, m) => { console.log((ok ? 'OK   ' : 'ECHEC') + '  ' + m); if (!ok) bad++; };
+// Le troisieme argument est le DIAGNOSTIC : ce qu on a obtenu au lieu de ce qu on
+// attendait. Sans lui, un echec dit seulement qu il y a un probleme, pas lequel.
+const check = (ok, m, extra) => {
+  console.log((ok ? 'OK   ' : 'ECHEC') + '  ' + m
+    + (ok || extra === undefined ? '' : ' — ' + JSON.stringify(extra)));
+  if (!ok) bad++;
+};
 
 const warn = [];
 const realWarn = console.warn; console.warn = (...a) => warn.push(a.join(' '));
@@ -278,6 +287,19 @@ check(LOOPS.length === 1, 'la boucle de rendu est bien installee');
       && DOOR.z > ROOM.back && DOOR.z < ROOM.front,
       'la porte est dans la piece et hors de tout ilot',
       { x: DOOR.x, z: DOOR.z });
+
+    // La bande avant ne fait que 3,3 entre la premiere rangee et le mur. Tout ce
+    // qu on y pose doit laisser le passage : c est la que vivent le cafe, le salon,
+    // les places debout et la table du midi, et c est la seule bande libre de la
+    // piece. Un ilot qui gagne quinze centimetres les prend a elle.
+    const dosIlot = Math.max(...POD_Z) + 3.05;
+    const chaise = G('LUNCH_CHAISE_Z') - .25;
+    check(chaise - dosIlot > .6,
+      'la table du midi laisse le passage derriere les ilots',
+      { dosIlot, bordChaise: chaise, passage: +(chaise - dosIlot).toFixed(2) });
+    check(G('LUNCH_Z') + .65 < ROOM.front,
+      'et elle ne traverse pas le mur avant',
+      { bordTable: G('LUNCH_Z') + .65, mur: ROOM.front });
   }
 }
 
@@ -383,6 +405,142 @@ if (!STREAM) {
     // Le matin, ou des qu on repond, tout le monde revient.
     vie.applyEndOfDay(10);
     check(!s.deserte && gens().every((a) => !a.home), 'au matin, ils reviennent');
+  }
+}
+
+/* ---------- Midi, et le lead qui va briefer ---------- */
+{
+  const midi = globalThis.__midi, vie = globalThis.__vie;
+  if (!midi || !vie || !STREAM) {
+    check(false, 'la table du midi est inspectable depuis le test');
+  } else {
+    const estRepas = (k) => midi.LUNCH_SPOTS.includes(k);
+    const rendre = (k) => { if (k) k.busy = false; };
+
+    midi.poser(10);
+    const matin = midi.claimLeisure();
+    check(matin && !estRepas(matin), 'a dix heures, on ne va pas a table', matin && matin.kind);
+    rendre(matin);
+
+    midi.poser(13);
+    const aTable = midi.claimLeisure();
+    check(aTable && estRepas(aTable), 'a treize heures, la table passe devant',
+      aTable && aTable.kind);
+    rendre(aTable);
+    midi.poser(10);
+
+    // Le lead designe l agent qu il doit aller briefer. L aller-retour lui-meme est
+    // joue par la boucle de rendu ; ce qui se verifie ici, c est le declenchement.
+    const sid = 'poste-b:brief001';
+    const base = { session_id: sid, machine: 'poste-b', fleet: true };
+    STREAM.deliver({ ...base, cwd: 'briefing', hook_event_name: 'SessionStart' });
+    STREAM.deliver({ ...base, hook_event_name: 'PreToolUse', act: 'task',
+      tool_name: 'Agent', tool_input: { subagent_type: 'Explore' }, tool_use_id: 'br1' });
+    const s = vie.sessions.get(sid);
+    check(s && s.main.briefTarget === s.subs[0],
+      'une delegation envoie le lead briefer l agent',
+      s && (s.main.briefTarget ? s.main.briefTarget.name : null));
+    STREAM.deliver({ ...base, hook_event_name: 'SessionEnd' });
+  }
+}
+
+/* ---------- Toute place de repos doit etre atteignable ---------- */
+// Poser un meuble, c est bloquer des cases de la grille de navigation. Un meuble mal
+// place mure ses propres chaises : les agents n y vont jamais, et rien ne le dit —
+// ils s installent simplement ailleurs. C est arrive deux fois dans ce fichier
+// (meubles restes a leur ancienne place apres l agrandissement de la piece), et
+// seule une assertion le voit.
+{
+  const pl = globalThis.__places;
+  if (!pl) {
+    check(false, 'les places de repos sont inspectables depuis le test');
+  } else {
+    const grille = pl.buildNav();
+    // Une assise DANS un meuble est voulue : on s assoit sur le canape, on se cale
+    // au mange-debout. findPath() le gere, en menant a la case libre la plus proche
+    // puis en posant le dernier pas a la main. Ce qu il faut verifier, c est donc
+    // qu une case libre existe TOUT PRES — sinon l agent est debarque a l autre bout
+    // de la piece et finit par traverser le decor en ligne droite.
+    const APPROCHE = 1.6;
+    const loinDeTout = [];
+    for (const [nom, pool] of [['bar', pl.COFFEE_SPOTS], ['canape', pl.COUCH_SPOTS],
+      ['places debout', pl.STAND_SPOTS], ['table du midi', pl.LUNCH_SPOTS]]) {
+      check(pool.length > 0, 'le pool « ' + nom + ' » n est pas vide', pool.length);
+      for (const p of pool) {
+        let mini = Infinity;
+        for (let dx = -APPROCHE; dx <= APPROCHE; dx += .2) {
+          for (let dz = -APPROCHE; dz <= APPROCHE; dz += .2) {
+            if (grille[pl.navCell(p.pos.x + dx, p.pos.z + dz)]) continue;
+            mini = Math.min(mini, Math.hypot(dx, dz));
+          }
+        }
+        if (mini > 1.3) {
+          loinDeTout.push(nom + ' (' + p.pos.x.toFixed(1) + ',' + p.pos.z.toFixed(1)
+            + ') a ' + (mini === Infinity ? '∞' : mini.toFixed(1)));
+        }
+      }
+    }
+    check(loinDeTout.length === 0,
+      'chaque place de repos a une case libre a portee de pas', loinDeTout);
+    check(!grille[pl.navCell(pl.DOOR.x, pl.DOOR.z)],
+      'la porte d entree n est pas muree', { x: pl.DOOR.x, z: pl.DOOR.z });
+  }
+}
+
+/* ---------- L ilot epouse son equipe ---------- */
+// Les cloisons disaient « equipe de quatre » quel que soit l effectif : une session
+// seule occupait quatre places, une equipe de six s entassait a deux par bureau. Le
+// tapis se dimensionne desormais sur les gens reellement la.
+{
+  const vie = globalThis.__vie;
+  if (!vie || !STREAM) {
+    check(false, 'les ilots sont inspectables depuis le test');
+  } else {
+    const sid = 'poste-t:taille01';
+    const base = { session_id: sid, machine: 'poste-t', fleet: true };
+    const tache = (n) => ({ ...base, hook_event_name: 'PreToolUse', act: 'task',
+      tool_name: 'Agent', tool_input: { subagent_type: 'Explore' }, tool_use_id: 't' + n });
+
+    STREAM.deliver({ ...base, cwd: 'taille', hook_event_name: 'SessionStart' });
+    const s = vie.sessions.get(sid);
+    check(!!s && s.pod.desks.length === 1,
+      'une session seule n occupe qu un bureau', s && s.pod.desks.length);
+    const tapisSeul = s.pod.edge.scale.z;
+
+    // Les places deja attribuees ne doivent JAMAIS bouger : un employe assis qui
+    // glisse parce qu un collegue arrive, ca se voit tout de suite.
+    const posAvant = s.pod.desks.map((d) => ({ x: d.seat.x, z: d.seat.z }));
+    STREAM.deliver(tache(1));
+    STREAM.deliver(tache(2));
+    check(s.pod.desks.length === 3, 'deux agents de plus, trois bureaux', s.pod.desks.length);
+    check(s.pod.desks.slice(0, 1).every((d, i) => d.seat.x === posAvant[i].x && d.seat.z === posAvant[i].z),
+      'les bureaux deja occupes n ont pas bouge');
+    check(s.pod.edge.scale.z > tapisSeul, 'le tapis a grandi avec l equipe',
+      { avant: tapisSeul, apres: s.pod.edge.scale.z });
+
+    // Plafond d emprise : au-dela de quatre, on double plutot que de mordre sur le voisin.
+    for (let i = 3; i <= 6; i++) STREAM.deliver(tache(i));
+    check(s.pod.desks.length === 4, 'l ilot plafonne a quatre bureaux', s.pod.desks.length);
+    check(s.subs.length === 6, 'mais les six agents sont bien la', s.subs.length);
+
+    // L equipe retrecit : les places rendues disparaissent.
+    const fin = (n) => STREAM.deliver({ ...base, hook_event_name: 'PostToolUse', act: 'task',
+      tool_name: 'Agent', tool_use_id: 't' + n });
+    for (let i = 1; i <= 6; i++) fin(i);
+    // finishSub() laisse l employe lire son rapport 1,4 s avant de rendre sa place :
+    // la fin de mission n est pas instantanee a l ecran, et le test doit l attendre.
+    await new Promise((r) => setTimeout(r, 1700));
+    check(s.pod.desks.length === 1,
+      'une fois l equipe partie, il ne reste qu un bureau', s.pod.desks.length);
+    check(Math.abs(s.pod.edge.scale.z - tapisSeul) < 1e-9,
+      'et le tapis a retrouve sa taille', { attendu: tapisSeul, obtenu: s.pod.edge.scale.z });
+
+    // Le portillon suit le bord du tapis, sinon on entre par le vide.
+    const g = s.pod.gate, h = s.pod.half;
+    check(Math.abs(Math.abs(g.z - h.cz) - (h.z + .4)) < 1e-6,
+      'le portillon reste au bord du tapis', { gate: g.z, centre: h.cz, demi: h.z });
+
+    STREAM.deliver({ ...base, hook_event_name: 'SessionEnd' });
   }
 }
 
