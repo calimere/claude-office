@@ -37,7 +37,7 @@
     width:20px; height:20px; line-height:19px; font-size:11px; }
   .label[data-act=wait] { border-color:#e0695e; animation:pulse 1.2s infinite; }
   .label[data-act=coffee] { border-color:#d9a05b; }
-  .label[data-act=game] { border-color:#8a9fd6; }
+  .label[data-act=game], .label[data-act=baby], .label[data-act=billard] { border-color:#8a9fd6; }
   .label[data-act=fall] { border-color:#e0a03c; }
   #sessions .staff { margin-top:6px; padding-top:6px; border-top:1px solid var(--line);
     color:var(--muted); font-size:10px; }
@@ -242,7 +242,7 @@ const sun = new THREE.DirectionalLight(0xffd9a8, 1.15);
 // pas, mais son volume d'ombre se recentre sur la piece. Sans ce decalage, les ilots
 // du fond seraient eclaires sans jamais projeter — une moitie de plateau qui flotte.
 sun.position.set(8, 20, 12 + ROOM.cz); sun.castShadow = true;
-sun.target.position.set(0, 0, ROOM.cz); scene.add(sun.target);
+sun.target.position.set(ROOM.cx, 0, ROOM.cz); scene.add(sun.target);
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.radius = 3; sun.shadow.bias = -0.0008;
 const shadowSpan = Math.max(ROOM.w, ROOM.d) * .62 + 8;
@@ -442,7 +442,9 @@ function applyDaylight(hour) {
   // ombres qui balaient la piece qui font sentir l'heure, pas la teinte seule.
   const p = clamp01((hour - SUN_H.rise) / Math.max(.5, SUN_H.set - SUN_H.rise));
   const elev = Math.sin(Math.PI * p);
-  sun.position.set(-21 + p * 42, 3.5 + elev * 23, -16);
+  // La course du soleil balaie la piece d un mur a l autre : ecrite en dur, elle
+  // restait calee sur une piece de trente de large.
+  sun.position.set(ROOM.left + 2 + p * (ROOM.w - 4), 3.5 + elev * 23, ROOM.back + 10);
 
   for (const pane of windowPanes) {
     pane.material.emissive.copy(lerpHex(a.win, b.win));
@@ -901,9 +903,11 @@ function claimLeisure(avoid) {
   return null; // tout est pris : l'employe reste la ou il est
 }
 
-// Tapis : epouse la bande, sans glisser sous les cloisons (paroi droite en x = 12,05).
+// Tapis du coin café, ancré sur le café. Il est resté a x = 12,4 — sa place dans une
+// pièce de trente de large — pendant que le comptoir partait dans la cantine : un
+// tapis seul au milieu de l'open space, sans rien dessus.
 const coffeeRug = box(4.8, .03, 3.4, 0x8c5a46, { roughness: 1 });
-coffeeRug.position.set(12.4, .015, 9.6); coffeeRug.castShadow = false;
+coffeeRug.position.set(wallR(2.6), .015, COFFEE.z); coffeeRug.castShadow = false;
 coffeeRug.receiveShadow = true; scene.add(coffeeRug);
 
 // Baie serveurs, dans l'angle du fond a droite. Trois armoires : seule celle du
@@ -940,10 +944,13 @@ for (const [cx, cz] of [
     if (live) rackLeds.push(led); else if (i % 3 === 0) led.material.emissive.setHex(0x2f6b48);
   }
 }
-// Chemin de cables entre les armoires et le mur : trois boucles molles.
-for (const [cz, col] of [[-9.74, 0x4a6fa8], [-9.62, 0xb03a2e], [-9.5, 0x6a615a]]) {
-  const duct = box(3.6, .06, .06, col);
-  duct.position.set(13.2, 2.12, cz); scene.add(duct);
+// Chemin de cables au-dessus des armoires : trois boucles molles. Ancre sur la BAIE,
+// comme il se doit — ecrites en dur, ces coordonnees sont restees a l'ancienne place
+// quand la baie a demenage dans sa salle, et trois barres de couleur flottaient a
+// deux metres au-dessus de l'open space, sans rien pour les soutenir.
+for (const [dz, col] of [[-.24, 0x4a6fa8], [-.12, 0xb03a2e], [0, 0x6a615a]]) {
+  const duct = box(5.4, .06, .06, col);
+  duct.position.set(RACK_X, 2.12, RACK_Z2 - .7 + dz); scene.add(duct);
 }
 function runningTasks() {
   return [...sessions.values()].reduce((n, s) => n + (s.bg?.length ?? 0), 0);
@@ -2657,6 +2664,26 @@ class Agent {
       c.armL.rotation.x = 1.12 + .06 * Math.sin(t * 9 + ph);
       c.armR.rotation.x = 1.12 + .06 * Math.sin(t * 11 + ph);
       c.head.rotation.x = -.06; c.torso.position.y = .62;
+    } else if (a === 'baby') {
+      // Baby-foot : les mains sur les barres, à hauteur de taille, et les poignets
+      // qui tournent EN CONTRETEMPS — c'est ce décalage entre les deux mains qui
+      // fait lire le geste. Les deux bras en phase, on aurait un gymnaste.
+      const tour = Math.sin(t * 7 + ph);
+      c.armL.rotation.x = .88 + .2 * tour;
+      c.armR.rotation.x = .88 - .2 * tour;
+      c.torso.rotation.x = -.13;        // penché sur la table
+      c.head.rotation.x = .2;           // et les yeux sur la balle
+      c.torso.position.y = .65 + .02 * Math.abs(tour);
+    } else if (a === 'billard') {
+      // Billard : on se penche bien plus bas, un bras posé sur le tapis et l'autre
+      // qui coulisse. Le mouvement est LENT — c'est ce qui le distingue du baby,
+      // où tout s'agite.
+      const coup = Math.sin(t * 1.5 + ph);
+      c.armL.rotation.x = 1.38;
+      c.armR.rotation.x = 1.02 + .26 * Math.max(0, coup);
+      c.torso.rotation.x = -.44;
+      c.head.rotation.x = .32;
+      c.torso.position.y = .56;
     } else { // idle
       c.armL.rotation.x = c.armR.rotation.x = .2; c.head.rotation.x = .15;
     }
@@ -2775,8 +2802,8 @@ const LEISURE_ACT = {
   coffee: ['coffee', '☕ au mange-debout'],
   stand: ['idle', '🧍 discute près du salon'],
   lunch: ['coffee', '🍽️ déjeune'],
-  baby: ['game', '⚽ au baby-foot'],
-  billard: ['game', '🎱 au billard'],
+  baby: ['baby', '⚽ au baby-foot'],
+  billard: ['billard', '🎱 au billard'],
 };
 
 // Reconstitue un employé que le serveur a gardé en mémoire. Il était déjà dans la
