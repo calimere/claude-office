@@ -169,6 +169,7 @@ src = src.replace(/^\s*import .*?;\s*$/gm, '');
 src += '\n;globalThis.__plan = { ROOM, POD_X, POD_Z, AISLES, aisleFor, NAV,'
   + ' COFFEE, RACK_Z, STAND_SPOTS, COFFEE_SPOTS, DOOR, LUNCH_Z, LUNCH_CHAISE_Z };'
   + '\n;globalThis.__vie = { sessions, applyEndOfDay, applyBlockPause, USAGE, handle };'
+  + '\n;globalThis.__cadrer = framePods;'
   + '\n;globalThis.__midi = { claimLeisure, LUNCH_SPOTS, poser: (h) => { HEURE = h; } };'
   + '\n;globalThis.__places = { COFFEE_SPOTS, COUCH_SPOTS, STAND_SPOTS, LUNCH_SPOTS,'
   + ' buildNav, navCell, DOOR };'
@@ -595,6 +596,29 @@ if (!STREAM) {
         STREAM.deliver({ session_id: 'cadre-' + n + '-' + i, hook_event_name: 'SessionEnd' });
       }
     }
+
+    // Le cadrage suit LES GENS, pas seulement les ilots. Quelqu un qui va boire un
+    // cafe doit rester dans le champ — c est la raison d etre de la piece, et un
+    // cadrage sur les seuls ilots le coupait des que le bar etait loin d eux.
+    STREAM.deliver({ session_id: 'cadre-cafe', machine: 'poste-c', fleet: true,
+      cwd: 'au-cafe', hook_event_name: 'SessionStart' });
+    const sCafe = vie.sessions.get('cadre-cafe');
+    if (!sCafe) {
+      check(false, 'la session du cafe existe');
+    } else {
+      const bar = globalThis.__plan.COFFEE;
+      sCafe.main.c.g.position.set(bar.x, 0, bar.z);
+      globalThis.__cadrer();
+      const r = horsChamp();
+      const c = cam();
+      const su = -(bar.x + bar.z) / R6, sr = (bar.x - bar.z) / R2;
+      const cu = -(c.cible.x + c.cible.z) / R6, cr = (c.cible.x - c.cible.z) / R2;
+      check(Math.abs(su - cu) <= c.span && Math.abs(sr - cr) <= c.span * aspect,
+        'quelqu un parti au cafe reste dans le cadre',
+        { ecartVertical: +(su - cu).toFixed(1), demiHauteur: +c.span.toFixed(1) });
+      check(r.dehors.length === 0, 'et les ilots y restent aussi', r);
+    }
+    STREAM.deliver({ session_id: 'cadre-cafe', hook_event_name: 'SessionEnd' });
   }
 }
 

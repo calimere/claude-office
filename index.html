@@ -163,6 +163,7 @@ controls.enableDamping = true;
 // Cadrage : la caméra se resserre quand il n'y a qu'un îlot, s'élargit quand
 // plusieurs projets tournent. Mis à jour par framePods() à chaque ouverture/fermeture.
 let camSpan = 8.5;
+let frameLast = 0; // derniere reprise du cadrage, pour ne pas la refaire a chaque image
 const camTarget = new V3();
 
 // Densité des bulles. À pleine charge, quarante bulles recouvrent le plateau et on
@@ -1719,7 +1720,16 @@ class Pod {
   }
 }
 
-// Recentre et redimensionne la vue sur les îlots actifs.
+// Recentre et redimensionne la vue sur ce qu'il y a à regarder.
+//
+// On cadre LES GENS, pas seulement les îlots. Un bureau se regarde pour ses
+// occupants, et les lieux de repos — bar à droite, salon au centre, places debout à
+// gauche, table du midi — s'étalent sur toute la largeur de la bande avant. Cadré
+// sur les seuls îlots, le plateau coupait quiconque allait prendre un café : on
+// perdait précisément ce qu'on vient voir.
+//
+// Les emplacements restent dans la boîte : un îlot dont tout le monde est sorti
+// garde son tapis et son nom, et doit rester visible.
 function framePods() {
   if (focused) return; // un ilot est epingle : on ne recadre pas dans son dos
   if (!pods.size) { camTarget.set(0, 0, 0); camSpan = 8.5; resize(); return; }
@@ -1728,10 +1738,15 @@ function framePods() {
   // cote a cote, et l'un des deux cadrages serait faux. L'echelle d'avant etait une
   // echelle par paliers, qui n'allait pas au-dela de six.
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-  for (const p of pods) {
-    const s = p.slot;
-    x0 = Math.min(x0, s.x); x1 = Math.max(x1, s.x);
-    z0 = Math.min(z0, s.z); z1 = Math.max(z1, s.z);
+  const tenir = (x, z) => {
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+    z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+  };
+  for (const p of pods) tenir(p.slot.x, p.slot.z);
+  // Les partis du soir ne comptent pas : ils ne sont plus dans la piece.
+  for (const a of agents) {
+    if (a.state === 'away') continue;
+    tenir(a.c.g.position.x, a.c.g.position.z);
   }
   // En vue isometrique, x et z poussent tous les deux l'image vers le haut : c'est
   // leur SOMME qui decide de la hauteur a l'ecran, pas le plus grand des deux. Cette
@@ -1748,7 +1763,12 @@ function framePods() {
   const CONTEXTE = 5.8;
   const etendue = (x1 - x0 + 6.1) + (z1 - z0 + 6.3);
   // camSpan est la DEMI-hauteur du cadre, d'ou le 2 au denominateur.
-  camSpan = Math.max(8.5, etendue / (2 * Math.sqrt(6)) * 1.08 + CONTEXTE);
+  const vise = Math.max(8.5, etendue / (2 * Math.sqrt(6)) * 1.08 + CONTEXTE);
+  // Hysteresis. Le cadrage suit maintenant des gens qui marchent, et il est
+  // recalcule plusieurs fois par seconde : sans seuil, le zoom respirerait en
+  // permanence au rythme des pas. On ne bouge que pour un vrai changement — quand
+  // quelqu'un part au cafe, pas quand il se deplace de trente centimetres.
+  if (Math.abs(vise - camSpan) / camSpan > .04) camSpan = vise;
   // Plus le cadre est large, plus il doit regarder le centre de la PIECE plutot que
   // celui des ilots. Sans ce glissement, trois sessions dans une piece de vingt
   // places font cadrer un coin : le parquet sort du champ et l'ecran est a moitie
@@ -2403,7 +2423,12 @@ class Agent {
       // Un employé repris de la mémoire du serveur arrive sans minuterie : on la lui
       // pose à sa première frame plutôt que de la calculer hors de la boucle.
       if (this.idleUntil == null) this.idleUntil = t + 45 + (hash(this.id) % 60);
-      if (t >= this.idleUntil) { this.goIdle(); return; }
+      // À table, on reste jusqu'à la fin du service. Sans cette exception, le
+      // changement d'occupation périodique leur faisait jouer aux chaises musicales :
+      // la table passant en tête à midi, ils se levaient pour se rasseoir à côté,
+      // toutes les minutes. À quatorze heures la règle tombe et ils repartent.
+      const aTable = this.spot?.kind === 'lunch' && HEURE >= MIDI[0] && HEURE < MIDI[1];
+      if (!aTable && t >= this.idleUntil) { this.goIdle(); return; }
     }
     g.rotation.y = resting ? this.faceAngle : 0;
     c.legL.rotation.x = c.legR.rotation.x = standing ? 0 : Math.PI / 2;
@@ -3462,6 +3487,10 @@ renderer.setAnimationLoop(() => {
   // seconde — sauf en horloge acceleree, ou il faut suivre image par image.
   const hour = nowHours(t);
   HEURE = hour; // lue par claimLeisure(), qui decide de l'heure du repas
+  // Le cadrage suit les gens : il faut donc le reprendre pendant qu'ils marchent, et
+  // plus seulement quand un ilot apparait. Deux fois par seconde suffit — la cible
+  // glisse par interpolation, et camSpan a son propre seuil.
+  if (t - frameLast > .5) { framePods(); frameLast = t; }
   if (CLOCK_SPEED > 0 || t - dayLast > .25) { applyDaylight(hour); applyEndOfDay(hour); dayLast = t; }
 
   // Le dehors n'est redessine que s'il bouge : pluie, neige et nuages a 10 images
