@@ -11,11 +11,12 @@ claude (CLI) ──hooks──▶ curl POST /event ──▶ server.js ──SSE
 En **mode flotte**, plusieurs postes publient dans le même bureau — chacun via un agent
 local qui n'émet que des statuts, jamais de contenu. Voir [La flotte](#la-flotte).
 
-- Chaque **session** Claude Code = un **îlot** de 4 bureaux, cloisonné (bois + verre
-  dépoli), posé sur un tapis de couleur. Une **descente de lit** devant l'ouverture porte
-  le nom du projet (dernier segment du `cwd` reçu dans les hooks) et, en dessous, le
-  **poste** d'où vient la session. Deux sessions sur le même projet sont numérotées
-  (`mon-projet #2`).
+- Chaque **session** Claude Code = un **îlot** de bureaux posé sur un tapis de couleur,
+  qui grandit et rétrécit avec l'équipe (4 bureaux au plus ; au-delà, on double sur le
+  dernier). Le nom du **poste** d'où vient la session est tissé dans le tapis — à défaut,
+  en mode local, l'identifiant de session. Le nom du projet ne s'écrit pas au sol : il est
+  dans la bulle du lead, le panneau Sessions et la fiche d'inspection. Deux sessions sur
+  le même projet sont numérotées (`mon-projet #2`).
 - Le plateau compte **20 emplacements**, 5 colonnes × 4 rangées. Les rangées vont par
   **paires** : chaque paire encadre une allée et s'ouvre dessus ; entre deux paires, les
   îlots se tournent le dos. Quatre rangées, deux allées. Le **couloir de gauche** les

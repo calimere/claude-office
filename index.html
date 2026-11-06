@@ -39,25 +39,6 @@
   .label[data-act=coffee] { border-color:#d9a05b; }
   .label[data-act=game], .label[data-act=baby], .label[data-act=billard] { border-color:#8a9fd6; }
   .label[data-act=fall] { border-color:#e0a03c; }
-  /* Plaque de l'îlot : le nom du poste d'où vient la session.
-     Il est déjà tissé dans le tapis — mais la pièce fait 57 m sur 37, et à ce recul
-     son texte mesure trois pixels de haut à l'écran. C'est de la laine, plus du
-     texte. Une plaque en HTML garde sa taille quel que soit le zoom : c'est la seule
-     façon de le rendre lisible sans rapprocher la caméra, et la caméra a mieux à
-     faire. */
-  #plaques { position:fixed; inset:0; pointer-events:none; }
-  .plaque { position:absolute; transform:translate(-50%,-50%); display:flex;
-    align-items:center; gap:6px; padding:3px 9px; border-radius:999px;
-    background:rgba(30,23,18,.78); border:1px solid var(--line); font-size:11px;
-    line-height:1.3; white-space:nowrap; box-shadow:0 3px 10px rgba(0,0,0,.35);
-    backdrop-filter:blur(2px); }
-  /* La pastille reprend la couleur du tapis : la plaque et l'îlot se répondent. */
-  .plaque i { width:7px; height:7px; border-radius:50%; background:var(--tint); flex:none; }
-  .plaque b { font-weight:600; }
-  /* Un seul poste sur le plateau — ou aucun, en mode local : la plaque répéterait
-     le même mot vingt fois. Elle n apparaît que quand elle distingue réellement un
-     îlot d un autre. */
-  #plaques[data-postes=un] .plaque { display:none; }
   #sessions .staff { margin-top:6px; padding-top:6px; border-top:1px solid var(--line);
     color:var(--muted); font-size:10px; }
   @keyframes pulse { 50% { box-shadow:0 0 0 5px rgba(224,105,94,.3); } }
@@ -124,7 +105,6 @@
 </head>
 <body>
 <div id="stage"></div>
-<div id="plaques"></div>
 <div id="labels"></div>
 <div id="hud"><span class="pill">Claude Office</span><span id="status" class="pill">Connexion…</span>
 <span id="sound" class="pill btn" role="button" aria-pressed="false" title="Son des appels">🔕 Son</span>
@@ -1722,21 +1702,14 @@ function placeBeaconLight() {
   beaconLight.position.set(beaconPod.slot.x, 5.1, beaconPod.slot.z);
 }
 
-const plaquesEl = document.getElementById('plaques');
-
-// Le nom du poste ne vaut d'être affiché que s'il distingue deux îlots. Recalculé
-// quand la composition du plateau change — c'est-à-dire exactement quand un îlot
-// apparaît ou disparaît, et jamais à chaque image.
-function majPostes() {
-  const postes = new Set();
-  for (const p of pods) if (p.poste) postes.add(p.poste);
-  plaquesEl.dataset.postes = postes.size > 1 ? 'plusieurs' : 'un';
-}
-
 class Pod {
-  constructor(title, sub, tint, poste) {
+  constructor(title, sub, tint) {
     this.tint = tint; this.members = new Set(); this.closing = false; this.closed = false;
-    this.title = title; this.poste = poste || '';
+    this.title = title;
+    // Ce qui est tisse dans le tapis : le poste en flotte, l'identifiant de session
+    // en local. Garde sous la main pour que le test puisse le lire — la texture,
+    // elle, est un canvas qu'on ne relit pas.
+    this.nomPoste = sub;
     // Au-delà de podSlots.length sessions simultanées, on empile sur l'emplacement
     // le moins chargé ; le comptage garde la libération correcte.
     this.slot = podSlots.find((s) => !s.count)
@@ -1795,22 +1768,6 @@ class Pod {
     this.nom.userData.pod = this; // cliquable comme le tapis de l'ilot
     this.g.add(this.nom);
 
-    // La plaque : le même nom de poste, à l'écran, au-dessus de l'endroit où il est
-    // tissé. Le tapis est au sol d'une pièce de 57 m sur 37 : à ce recul, son texte
-    // mesure trois pixels de haut. Une plaque en HTML garde sa taille quel que soit
-    // le zoom — c'est la seule façon de le rendre lisible sans rapprocher la caméra,
-    // et la caméra a mieux à faire.
-    //
-    // textContent et pas innerHTML : un nom de poste vient d'une autre machine, et
-    // personne n'a promis qu'il ne contenait pas de chevrons.
-    this.plaque = document.createElement('div');
-    this.plaque.className = 'plaque';
-    this.plaque.style.setProperty('--tint', '#' + tint.toString(16).padStart(6, '0'));
-    this.plaque.append(document.createElement('i'));
-    const etiq = document.createElement('b'); etiq.textContent = this.poste;
-    this.plaque.append(etiq);
-    plaquesEl.append(this.plaque);
-
     // Gyrophare : eteint la plupart du temps, il s'allume quand la session appelle.
     this.beacon = new THREE.Mesh(new THREE.SphereGeometry(.26, 14, 12),
       new THREE.MeshStandardMaterial({ color: 0x3a2f27, emissive: 0x000000 }));
@@ -1828,7 +1785,7 @@ class Pod {
     // Les autres s'ajoutent quand des agents arrivent.
     this.desks = [];
     this.addDesk();
-    pods.add(this); invalidateNav(); framePods(); majPostes();
+    pods.add(this); invalidateNav(); framePods();
   }
 
   // Un bureau de plus, posé à la suite. Les positions déjà attribuées ne bougent
@@ -1938,8 +1895,7 @@ class Pod {
   dispose() {
     scene.remove(this.g);
     this.g.traverse((o) => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); });
-    this.plaque.remove();
-    this.slot.count--; pods.delete(this); invalidateNav(); framePods(); majPostes();
+    this.slot.count--; pods.delete(this); invalidateNav(); framePods();
     // L'ilot demonte pouvait porter la lumiere du gyrophare : elle doit retrouver
     // un porteur, ou s'eteindre.
     if (beaconPod === this) placeBeaconLight();
@@ -2775,23 +2731,6 @@ class Agent {
 //
 // Lectures et ecritures du DOM sont separees en deux boucles : les melanger forcerait
 // un recalcul de mise en page du navigateur a chaque etiquette, a chaque frame.
-// Les plaques d'îlots, projetées comme les bulles mais sans désempilement : un îlot
-// ne se déplace pas, et deux plaques ne peuvent se recouvrir que si deux îlots se
-// recouvrent — auquel cas le problème n'est pas la plaque.
-//
-// En pastille, la caméra est si loin que les personnages eux-mêmes ne sont plus que
-// des points : vingt plaques y masqueraient la pièce qu'on vient regarder.
-function layoutPlaques() {
-  const montrer = labelDensity !== 'pastille';
-  plaquesEl.hidden = !montrer;
-  if (!montrer) return;
-  for (const p of pods) {
-    tmp.copy(p.nom.position); tmp.project(cam);
-    p.plaque.style.left = ((tmp.x * .5 + .5) * innerWidth) + 'px';
-    p.plaque.style.top = ((-tmp.y * .5 + .5) * innerHeight) + 'px';
-  }
-}
-
 const LABEL_GAP = 4;
 // Glissement maximal d'une étiquette désempilée, en pixels. Environ deux hauteurs
 // d'étiquette : au-delà, on ne sait plus à qui elle appartient.
@@ -2972,11 +2911,10 @@ function handle(ev) {
   if (!s) {
     if (evn === 'SessionEnd') return;
     const project = uniqueName(projectName(ev.cwd));
-    // Sous le nom du projet : le poste en mode flotte, l'identifiant de session en
-    // local. Sur un plateau qui mélange plusieurs machines, savoir CHEZ QUI se passe
-    // un dossier vaut mieux que huit caractères d'UUID.
-    const pod = new Pod(project, ev.machine || sid.slice(0, 8),
-      TINTS[podCount++ % TINTS.length], ev.machine);
+    // Ce qui s'écrit dans le tapis : le nom du POSTE en mode flotte, l'identifiant de
+    // session en local, faute de mieux. Sur un plateau qui mélange plusieurs machines,
+    // savoir chez qui se passe un dossier vaut mieux que huit caractères d'UUID.
+    const pod = new Pod(project, ev.machine || sid.slice(0, 8), TINTS[podCount++ % TINTS.length]);
     s = {
       sid, cwd: ev.cwd || '', project, pod, subs: [], machine: ev.machine || '',
       main: new Agent(sid, { name: project, kind: 'main', pod }),
@@ -3829,7 +3767,6 @@ renderer.setAnimationLoop(() => {
   controls.target.lerp(camTarget, 1 - Math.exp(-dt * 2.5)); // glisse vers le nouveau cadrage
   controls.update();
   if (composer) composer.render(); else renderer.render(scene, cam);
-  layoutPlaques();
   layoutLabels();
   if (selection) renderDetail();
   hintEl.style.display = mode === 'live' && sessions.size === 0 ? 'block' : 'none';
