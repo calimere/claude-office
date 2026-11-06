@@ -1845,7 +1845,16 @@ function makeChar(look) {
     collar.position.y = .56; torso.add(collar);
   }
 
-  const head = new THREE.Group(); head.position.y = .82; torso.add(head);
+  // Tête agrandie d'un tiers. C'est le réglage qui fait le plus pour sortir du
+  // registre « avatar » : à 1,7 de haut pour une tête de 0,44, on était au quart,
+  // les proportions d'un adulte réaliste — exactement ce qui donne l'air Roblox.
+  // À un tiers environ, on bascule vers le personnage dessiné. Tout le visage est
+  // enfant du groupe, donc yeux, sourcils, bouche et lunettes suivent.
+  //
+  // Elle descend aussi un peu : le bas du crâne entre maintenant dans les épaules,
+  // ce qui supprime le trou qu'on avait entre tête et torse.
+  const head = new THREE.Group(); head.position.y = .80; head.scale.setScalar(1.3);
+  torso.add(head);
   const skull = new THREE.Mesh(new THREE.SphereGeometry(.22, 20, 16), skinMat);
   skull.castShadow = true; head.add(skull);
 
@@ -1897,18 +1906,30 @@ function makeChar(look) {
     }
   }
 
+  // Membres en CAPSULES, pas en boîtes. Deux parallélépipèdes empilés, c'est ce qui
+  // donne la silhouette « assemblée en briques » : la couture à l'articulation se
+  // voit, et les arêtes vives trahissent le pavé. Les bouts arrondis d'une capsule
+  // se recouvrent, l'articulation disparaît, et le membre cesse d'être un meuble.
+  // Une capsule mesure `longueur + 2 × rayon` au total : les longueurs ci-dessous
+  // sont donc amputées du diamètre pour conserver les tailles d'avant.
+  // Finesse volontairement basse : 2 anneaux de calotte et 8 cotes. A la taille ou
+  // un personnage apparait en vue isometrique, on ne distingue pas 8 cotes de 16,
+  // mais la piece peut contenir quatre-vingts personnes — six capsules chacune.
+  const capsule = (r, h, col) => new THREE.Mesh(
+    new THREE.CapsuleGeometry(r, h, 2, 8), new THREE.MeshStandardMaterial({ color: col, roughness: .8 }));
   const mkArm = (x) => {
     const p = new THREE.Group(); p.position.set(x * look.build, .55, 0);
-    const upper = box(.14, .26, .14, look.shirt); upper.position.y = -.13; p.add(upper);
-    const lower = box(.13, .24, .13, look.shortSleeves ? look.skin : look.shirt);
-    lower.position.y = -.37; p.add(lower);
+    const upper = capsule(.07, .12, look.shirt);
+    upper.position.y = -.13; upper.castShadow = true; p.add(upper);
+    const lower = capsule(.065, .11, look.shortSleeves ? look.skin : look.shirt);
+    lower.position.y = -.37; lower.castShadow = true; p.add(lower);
     const hand = new THREE.Mesh(new THREE.SphereGeometry(.08, 10, 8), skinMat);
     hand.position.y = -.5; p.add(hand);
     torso.add(p); return p;
   };
   const mkLeg = (x) => {
     const p = new THREE.Group(); p.position.set(x, .65, 0);
-    const l = box(.18, .55, .2, look.pants); l.position.y = -.28; p.add(l);
+    const l = capsule(.095, .36, look.pants); l.position.y = -.28; l.castShadow = true; p.add(l);
     // La chaussure deborde vers l'AVANT, donc vers -Z. Posee en +Z, la pointe partait
     // dans le dos et tout le monde marchait avec les pieds a l'envers.
     const shoe = box(.19, .09, .27, 0x2e2622); shoe.position.set(0, -.58, -.04); p.add(shoe);
@@ -2012,6 +2033,13 @@ class Agent {
     this.set(kind === 'main' ? 'idle' : 'walk', kind === 'main' ? '☕ prêt' : '🚶 arrive…');
     agents.add(this); pod?.members.add(this);
     this.gen = 0; // jeton d'affectation : invalide les minuteries d'une mission passee
+    // L'allure, dérivée du nom comme la silhouette. Sans elle, cinq personnes qui
+    // traversent la pièce lèvent la jambe exactement en même temps — c'est le signal
+    // « clones » le plus fort qui soit, et c'est l'erreur que les clignements
+    // évitaient déjà : synchronisés, ils font l'effet inverse de ce qu'on cherche.
+    this.pas = (hash(id + 'pas') % 628) / 100;        // déphasage
+    this.allure = .88 + (hash(id + 'all') % 25) / 100; // cadence
+    this.balance = .85 + (hash(id + 'bal') % 30) / 100; // amplitude du balancement
   }
   // Trajet vers `goal`, cherche en A* sur la grille (voir findPath()). Les cloisons,
   // bureaux et meubles sont des obstacles : plus besoin de couloirs imposes, chacun
@@ -2122,7 +2150,8 @@ class Agent {
   updateFall(t) {
     const c = this.c, g = c.g, f = this.fall, e = t - f.t0;
     g.rotation.order = 'YXZ'; g.rotation.y = f.yaw;
-    c.head.rotation.set(0, 0, 0); c.torso.position.y = .65; c.mug.visible = false;
+    c.head.rotation.set(0, 0, 0); c.torso.position.y = .65; c.torso.rotation.x = 0;
+    c.mug.visible = false;
     if (e < FALL_TIP) {
       const p = e / FALL_TIP;
       g.position.lerpVectors(f.from, f.to, Math.min(1, p * 1.4));
@@ -2340,11 +2369,17 @@ class Agent {
       if (dist <= step) { g.position.copy(tgt); this.path.shift(); }
       else { g.position.addScaledVector(d, step / dist); g.rotation.y = Math.atan2(-d.x, -d.z); }
       this.bump(d.x, d.z, t);
-      const sw = Math.sin(t * 12) * .6;
+      // Cadence propre à chacun : déphasage, vitesse et amplitude tirés du nom.
+      const cad = t * 12 * this.allure + this.pas;
+      const sw = Math.sin(cad) * .6 * this.balance;
       c.legL.rotation.x = sw; c.legR.rotation.x = -sw;
       c.armL.rotation.x = -sw * .8; c.armR.rotation.x = sw * .8;
-      c.torso.position.y = .65 + Math.abs(Math.sin(t * 12)) * .04;
-      c.head.rotation.set(0, 0, 0);
+      c.torso.position.y = .65 + Math.abs(Math.sin(cad)) * .04;
+      // Le buste penche vers l'avant et la tête suit le pas à contretemps. Une
+      // marche sans inclinaison est une marche de pantin : c'est le corps qui part
+      // devant et les jambes qui rattrapent, jamais l'inverse.
+      c.torso.rotation.x = -.07;
+      c.head.rotation.set(.05 - Math.sin(cad) * .025, Math.sin(cad * .5) * .07, 0);
       c.mug.visible = false; // la tasse reste au mange-debout : on ne marche pas avec
       if (!this.path.length) {
         if (this.state === 'walkin') {
@@ -2432,7 +2467,7 @@ class Agent {
     }
     g.rotation.y = resting ? this.faceAngle : 0;
     c.legL.rotation.x = c.legR.rotation.x = standing ? 0 : Math.PI / 2;
-    c.torso.position.y = .65; c.head.rotation.set(0, 0, 0);
+    c.torso.position.y = .65; c.torso.rotation.x = 0; c.head.rotation.set(0, 0, 0);
     // Apres une chute, plus de tasse jusqu'a la prochaine place au bar.
     c.mug.visible = (this.state === 'coffee' || this.spot?.kind === 'coffee') && !this.cupless;
     c.pad.visible = onCouch;
