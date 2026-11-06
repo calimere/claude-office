@@ -411,6 +411,7 @@ besoin d'arguments. L'ordre est : fichier, puis `OFFICE_SERVER` / `OFFICE_TOKEN`
 | `-port` | 4317 | port local, là où pointent les hooks |
 | `-page` | détecté | `index.html` pour la vue locale |
 | `-hooks` | aucun | installe les hooks de Claude Code dans `~/.claude/settings.json` |
+| `-quit` | aucun | s'arrête après `-save` / `-hooks` au lieu de démarrer l'agent (c'est ce qu'utilise l'installateur) |
 
 **Sans `-server`**, l'agent ne fait que la vue locale : c'est un `server.js` en plus
 petit, et rien ne quitte la machine.
@@ -438,6 +439,34 @@ Double-clic : il enregistre la configuration dans `%APPDATA%`, et les fois suiva
 se suffit à lui-même — `agent.cfg` ne sert plus. Si `index.html` est un cran au-dessus
 (donc si on lance depuis le dépôt), il active aussi la vue locale. Il passe `-hooks` à
 chaque lancement, donc un poste où Claude Code est installé après coup se répare seul.
+
+#### Diffuser l'agent
+
+`./paquet.sh` fabrique les trois archives dans `dist/` — Go compile pour les trois
+cibles depuis n'importe quel poste, sans rien installer de plus :
+
+```sh
+./paquet.sh                                                  # archives neutres
+SERVEUR=http://192.168.1.56:4317 JETON=xxxx ./paquet.sh      # configuration incluse
+```
+
+| Archive | Pour | Ce qu'on fait |
+|---|---|---|
+| `claude-office-agent-windows-amd64.zip` | Windows | décompresser, double-cliquer `lancer-agent.bat` |
+| `claude-office-agent-linux-amd64.tar.gz` | Linux x86 | `./installer.sh http://serveur:4317 JETON` |
+| `claude-office-agent-linux-arm64.tar.gz` | Linux ARM | idem |
+
+Avec `SERVEUR=` et `JETON=`, `agent.cfg` part **pré-rempli dans l'archive** : le collègue
+décompresse et double-clique, rien à saisir. L'archive contient alors le jeton — elle se
+diffuse comme le jeton lui-même, et pas plus loin.
+
+`agent/installer.sh` ne demande jamais `sudo`. Il pose l'exécutable dans
+`~/.local/bin`, la configuration en mode 600 dans `~/.config/claude-office`, les hooks
+dans `~/.claude/settings.json`, et un service systemd **utilisateur** qui démarre avec la
+session. Là où systemd utilisateur n'existe pas (conteneur, WSL1), il ne bricole pas un
+autre mécanisme : il le dit et donne la commande à lancer. `./installer.sh --desinstaller`
+fait le chemin inverse, et laisse volontairement la configuration et les hooks — avec la
+marche à suivre pour les retirer aussi.
 
 `agent.cfg` **n'est pas versionné** : ce dépôt est public, et un jeton n'a rien à y faire.
 

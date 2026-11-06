@@ -93,6 +93,7 @@ func main() {
 	page := flag.String("page", "", "chemin d'index.html pour la vue locale")
 	writeCfg := flag.Bool("save", false, "enregistre les options donnees dans le fichier de configuration")
 	doHooks := flag.Bool("hooks", false, "installe les hooks Claude Code dans ~/.claude/settings.json")
+	quitAfter := flag.Bool("quit", false, "s arrete apres -save et -hooks au lieu de demarrer l agent")
 	flag.Parse()
 
 	// Fichier, puis variables d'environnement, puis options : chaque niveau ecrase
@@ -164,6 +165,12 @@ func main() {
 		default:
 			fmt.Printf("%d hooks ajoutes dans %s — relancez `claude` pour qu ils prennent effet\n", n, p)
 		}
+	}
+
+	// L installateur configure, puis rend la main : c est un service qui demarrera
+	// l agent ensuite, pas cet appel-ci.
+	if *quitAfter {
+		return
 	}
 
 	logf := func(f string, a ...any) { fmt.Printf("  "+f+"\n", a...) }

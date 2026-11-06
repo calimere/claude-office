@@ -350,43 +350,65 @@ docker compose up -d</code></pre>
     <div class="track">
       <p class="track-tag">À faire sur chaque PC</p>
       <h2>Brancher un poste</h2>
-      <p class="sub">Un exécutable, une commande, et c'est fini. Rien à installer, aucune
+      <p class="sub">Une archive à décompresser, et c'est fini. Rien à installer, aucune
         dépendance.</p>
 
       <ol class="steps">
         <li>
-          <p class="t">Poser l'agent</p>
-          <p>Copie <code>claude-office-agent.exe</code> où tu veux — par exemple
-            <code>C:\Outils\claude-office\</code>.</p>
+          <p class="t">Récupérer l'archive de son système</p>
+          <p><code>claude-office-agent-windows-amd64.zip</code> pour Windows,
+            <code>claude-office-agent-linux-amd64.tar.gz</code> pour Linux
+            (<code>-arm64</code> sur ARM). Chacune contient l'exécutable, la page de la
+            vue locale, et un <code>LISEZMOI.txt</code>.</p>
         </li>
 
         <li>
-          <p class="t">Le configurer, une fois pour toutes</p>
-          <p><code>-save</code> écrit la configuration dans
-            <code>%APPDATA%\claude-office\agent.json</code>. Ensuite, un double-clic suffit.</p>
+          <p class="t">Windows : décompresser, double-cliquer</p>
+          <p><code>lancer-agent.bat</code> lit <code>agent.cfg</code>, enregistre la
+            configuration dans <code>%APPDATA%\claude-office\agent.json</code>, installe les
+            hooks, et démarre. Les fois suivantes, le double-clic suffit seul.</p>
+          <p>Si l'archive n'est pas pré-remplie, ouvre <code>agent.cfg</code> et remplace les
+            deux lignes par l'adresse du serveur et le jeton.</p>
+        </li>
+
+        <li>
+          <p class="t">Linux : un script, sans sudo</p>
+          <p>Il pose tout dans le dossier personnel — exécutable, configuration en mode 600,
+            hooks, et un service systemd utilisateur qui démarre avec la session.
+            <code>./installer.sh --desinstaller</code> fait le chemin inverse.</p>
           <div class="cmd">
-            <div class="cmd-head"><span class="cmd-where">PowerShell · dans le dossier de l'agent</span>
+            <div class="cmd-head"><span class="cmd-where">Terminal</span>
               <button class="copy" type="button">Copier</button></div>
-<pre><code>.\claude-office-agent.exe -server http://ip-du-serveur:4317 -token LE_JETON -save</code></pre>
+<pre><code>tar xzf claude-office-agent-linux-amd64.tar.gz
+cd claude-office-agent && ./installer.sh http://ip-du-serveur:4317 LE_JETON</code></pre>
           </div>
-          <p style="margin-top:.8rem">Par défaut, l'îlot porte le nom de ta machine.
-            <code>-machine "Bureau de Rémy"</code> pour en choisir un autre.</p>
         </li>
 
         <li>
-          <p class="t">Installer les hooks</p>
-          <p>C'est par eux que Claude Code parle à l'agent. Copie le bloc <code>hooks</code> de
-            <code>hooks.json</code> dans <code>~/.claude/settings.json</code> — et fusionne-le
-            avec tes hooks existants si tu en as.</p>
-          <p>Le même fichier vaut pour Windows, macOS et Linux, et il n'y a aucun chemin à
-            adapter : l'agent écoute là où les hooks écrivent déjà.</p>
-        </li>
-
-        <li>
-          <p class="t">Lancer <code>claude</code> normalement</p>
-          <p>Ton îlot apparaît dans le bureau. Il n'y a rien d'autre à faire.</p>
+          <p class="t">Relancer <code>claude</code></p>
+          <p>Ton îlot apparaît dans le bureau. Il n'y a rien d'autre à faire — mais il faut
+            bien <strong>relancer</strong> : une session déjà ouverte garde les hooks qu'elle
+            avait au démarrage, et ne remontera rien.</p>
         </li>
       </ol>
+
+      <div class="note">
+        <span class="label">À la main, si tu préfères</span>
+        <p>L'exécutable seul suffit :
+          <code>claude-office-agent -server http://ip-du-serveur:4317 -token LE_JETON -save -hooks</code>.
+          <code>-save</code> écrit la configuration, <code>-hooks</code> fusionne les huit hooks
+          dans <code>~/.claude/settings.json</code> sans toucher à ceux qui s'y trouvent déjà
+          — et ne réécrit rien s'ils sont tous là, donc on peut le passer à chaque lancement.
+          Par défaut l'îlot porte le nom de la machine ; <code>-machine "Bureau de Rémy"</code>
+          pour en choisir un autre.</p>
+      </div>
+
+      <div class="note">
+        <span class="label">En ligne, mais zéro session ?</span>
+        <p>C'est <strong>toujours</strong> les hooks. L'agent se connecte parfaitement sans
+          eux : le poste apparaît dans le bureau, en ligne, et ne remonte rien. Vérifie
+          <code>~/.claude/settings.json</code>, puis relance <code>claude</code>.</p>
+      </div>
 
       <div class="note">
         <span class="label">Deux bureaux, pas un</span>

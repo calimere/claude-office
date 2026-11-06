@@ -4,3 +4,4 @@ agent/agent.cfg
 agent/claude-office-agent
 agent/claude-office-agent.exe
 index.html.bak
+dist/
