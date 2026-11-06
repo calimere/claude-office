@@ -49,7 +49,14 @@ echo.
 echo   Premiere configuration : %SERVEUR%
 echo   Elle sera enregistree ; les prochaines fois, ce .bat suffira seul.
 echo.
-"%EXE%" -server "%SERVEUR%" -token "%JETON%" -save
+REM -hooks : l'agent installe lui-meme les hooks de Claude Code dans
+REM %USERPROFILE%\.claude\settings.json. Sans eux, l'agent se connecte
+REM parfaitement et ne recoit rien : le poste apparait dans le bureau, en ligne,
+REM avec zero session, la panne la plus deroutante, parce que tout a l'air de
+REM marcher. L'operation est sans effet quand ils sont deja en place, donc on la
+REM refait a chaque lancement : un poste ou Claude Code est installe plus tard se
+REM repare tout seul.
+"%EXE%" -server "%SERVEUR%" -token "%JETON%" -save -hooks
 set CODE=%errorlevel%
 goto fin
 
@@ -58,7 +65,7 @@ echo.
 echo   Agent en marche. Laissez cette fenetre ouverte.
 echo   Ctrl+C ou fermer la fenetre arrete la publication.
 echo.
-"%EXE%"
+"%EXE%" -hooks
 set CODE=%errorlevel%
 
 :fin

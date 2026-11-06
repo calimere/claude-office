@@ -92,6 +92,7 @@ func main() {
 	port := flag.Int("port", 0, "port d'ecoute local (defaut 4317, la ou pointent les hooks)")
 	page := flag.String("page", "", "chemin d'index.html pour la vue locale")
 	writeCfg := flag.Bool("save", false, "enregistre les options donnees dans le fichier de configuration")
+	doHooks := flag.Bool("hooks", false, "installe les hooks Claude Code dans ~/.claude/settings.json")
 	flag.Parse()
 
 	// Fichier, puis variables d'environnement, puis options : chaque niveau ecrase
@@ -147,6 +148,22 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("configuration enregistree dans %s\n", *cfgPath)
+	}
+
+	// Un agent connecte qui ne recoit aucun hook est la panne la plus deroutante de
+	// l installation : tout a l air de marcher. Le lanceur passe -hooks a chaque
+	// demarrage, et l operation ne reecrit rien quand tout est deja en place.
+	if *doHooks {
+		p, n, err := InstallHooks(cfg.Port)
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "hooks : %v\n", err)
+			os.Exit(1)
+		case n == 0:
+			fmt.Printf("hooks deja en place dans %s\n", p)
+		default:
+			fmt.Printf("%d hooks ajoutes dans %s — relancez `claude` pour qu ils prennent effet\n", n, p)
+		}
 	}
 
 	logf := func(f string, a ...any) { fmt.Printf("  "+f+"\n", a...) }

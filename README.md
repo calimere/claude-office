@@ -410,9 +410,19 @@ besoin d'arguments. L'ordre est : fichier, puis `OFFICE_SERVER` / `OFFICE_TOKEN`
 | `-machine` | nom de la machine | le nom affiché sur l'îlot |
 | `-port` | 4317 | port local, là où pointent les hooks |
 | `-page` | détecté | `index.html` pour la vue locale |
+| `-hooks` | aucun | installe les hooks de Claude Code dans `~/.claude/settings.json` |
 
 **Sans `-server`**, l'agent ne fait que la vue locale : c'est un `server.js` en plus
 petit, et rien ne quitte la machine.
+
+**`-hooks` ferme le trou de l'installation.** Un agent configuré mais sans hooks se
+connecte parfaitement et ne reçoit rien : le poste apparaît dans le bureau, en ligne,
+avec zéro session. C'est la panne la plus déroutante de toute l'installation, parce que
+tout a l'air de marcher. L'option fusionne les huit hooks dans `~/.claude/settings.json`
+sans toucher à ceux qui s'y trouvent déjà, sauvegarde l'ancien fichier en
+`settings.json.avant-claude-office`, et ne réécrit rien quand ils sont tous présents —
+on peut donc la passer à chaque lancement. Il faut relancer `claude` pour qu'ils
+prennent effet.
 
 #### Sous Windows, le lanceur
 
@@ -426,7 +436,8 @@ JETON=le-jeton-donné-par-l-administrateur
 
 Double-clic : il enregistre la configuration dans `%APPDATA%`, et les fois suivantes il
 se suffit à lui-même — `agent.cfg` ne sert plus. Si `index.html` est un cran au-dessus
-(donc si on lance depuis le dépôt), il active aussi la vue locale.
+(donc si on lance depuis le dépôt), il active aussi la vue locale. Il passe `-hooks` à
+chaque lancement, donc un poste où Claude Code est installé après coup se répare seul.
 
 `agent.cfg` **n'est pas versionné** : ce dépôt est public, et un jeton n'a rien à y faire.
 
