@@ -17,6 +17,10 @@ services:
       OFFICE_TOKEN: ${OFFICE_TOKEN:?definissez OFFICE_TOKEN, par exemple avec "openssl rand -hex 16"}
       # Ville de la meteo (seul appel sortant du serveur).
       CITY: ${CITY:-Paris}
+      # /event accepte des hooks BRUTS. Un serveur de flotte n'en a aucun usage : les
+      # postes publient sur /ingest, assainis. Fermer la porte evite qu'un reverse
+      # proxy ajoute un jour devant ne la rouvre sans qu'on y pense.
+      LOCAL_EVENT: ${LOCAL_EVENT:-0}
       # Mot de passe de la page. Vide sur un LAN ; a remplir des que le serveur sort.
       VIEW_USER: ${VIEW_USER:-office}
       VIEW_PASSWORD: ${VIEW_PASSWORD:-}

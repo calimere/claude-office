@@ -316,6 +316,22 @@ await new Promise((done) => {
 await wait(200);
 check('le mode local /event relaie toujours le detail', got((e) => e.session_id === 'local-1').length === 1);
 
+// La meme requete, avec un en-tete de transfert : c est a quoi ressemble Internet vu
+// de derriere un reverse proxy. La socket dit toujours 127.0.0.1 — c est bien la le
+// piege — et /event diffuse du BRUT. Si celui-la passe, le serveur publie la charge
+// utile complete de qui veut, et la protection « boucle locale seulement » n est pas
+// en panne : elle s est inversee.
+const proxyCode = await new Promise((done) => {
+  const r = http.request({ host: '127.0.0.1', port: PORT, path: '/event', method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.7' } },
+    (res) => { res.resume(); done(res.statusCode); });
+  r.on('error', () => done('erreur'));
+  r.end(JSON.stringify({ session_id: 'intrus-1', cwd: '/x/intrus', hook_event_name: 'SessionStart' }));
+});
+await wait(200);
+check('un POST /event portant un en-tete de proxy est refuse', proxyCode === 403, proxyCode);
+check('et rien de l intrus n atteint la page', got((e) => e.session_id === 'intrus-1').length === 0);
+
 // Un poste absent SURVIT desormais, en pause, jusqu a ABSENT_TTL. On attend donc
 // qu il expire avant de verifier qu il ne reste rien. Compter la detection de la
 // socket morte (SWEEP_EVERY) en plus du TTL lui-meme.

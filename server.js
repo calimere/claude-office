@@ -32,6 +32,10 @@ const VIEW_USER = process.env.VIEW_USER || 'office';
 // /event accepte des hooks BRUTS (avec prompts, commandes, chemins). Reserve a la
 // boucle locale : l'ouvrir au reseau, ce serait precisement la fuite qu'on evite.
 const ALLOW_REMOTE_EVENT = process.env.ALLOW_REMOTE_EVENT === '1';
+// L'endpoint des hooks bruts. Indispensable en mode local — c'est par la que la page
+// de ce poste recoit tout le detail — et inutile sur un serveur de flotte, ou les
+// postes publient sur /ingest. LOCAL_EVENT=0 le ferme.
+const LOCAL_EVENT = process.env.LOCAL_EVENT !== '0';
 
 const MACHINE_TIMEOUT = 45e3;  // sans signe de vie : le poste est considere parti
 // Delai de grace apres une coupure brutale, avant de demonter les ilots du poste.
@@ -515,7 +519,18 @@ function onAgent(sock, ctx) {
 
 /* ======================= HTTP ======================= */
 
+// « Boucle locale » se lit sur la socket — et derriere un reverse proxy, TOUTES les
+// sockets viennent de 127.0.0.1. Un serveur publie derriere Caddy ou nginx ouvrait
+// donc /event, qui diffuse la charge BRUTE (prompts, commandes, chemins), au monde
+// entier. La protection ne tombait pas en panne : elle s'inversait, sans rien dire.
+//
+// Un en-tete de transfert prouve qu'un intermediaire est passe par la : ce n'est
+// alors plus une requete locale, quoi qu'en dise la socket. Un attaquant peut forger
+// ces en-tetes, mais seulement pour se faire REFUSER — le sens de la verification est
+// le bon.
+const FORWARD_HEADERS = ['x-forwarded-for', 'x-real-ip', 'x-forwarded-host', 'forwarded'];
 const isLoopback = (req) => {
+  if (FORWARD_HEADERS.some((h) => req.headers[h])) return false;
   const a = req.socket.remoteAddress || '';
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
 };
@@ -535,6 +550,11 @@ const server = http.createServer((req, res) => {
   // Hooks locaux, charge utile BRUTE. Boucle locale uniquement, sauf demande
   // explicite : ce qui arrive ici contient les prompts et les commandes.
   if (req.method === 'POST' && req.url === '/event') {
+    // Un serveur de flotte n'a aucun usage de cet endpoint : les postes publient sur
+    // /ingest, assainis. LOCAL_EVENT=0 le ferme pour de bon — c'est une porte de
+    // moins a surveiller sur une machine exposee, et la seule qui laisse passer du
+    // brut. Voir docker-compose.yml, qui le met a 0.
+    if (!LOCAL_EVENT) return res.writeHead(404).end();
     if (!isLoopback(req) && !ALLOW_REMOTE_EVENT) return res.writeHead(403).end();
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 1e6) req.destroy(); });

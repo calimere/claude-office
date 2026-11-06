@@ -1,0 +1,63 @@
+# Claude Office — adresse publique, derriere un reverse proxy existant.
+#
+# Pour Nginx Proxy Manager, Traefik, ou un nginx a la main : c'est LUI qui porte le
+# certificat et le https. Ce fichier ne fait qu'une chose de plus que le fichier LAN —
+# il ferme tout ce qui n'a pas a etre joignable depuis Internet.
+#
+#   OFFICE_TOKEN=$(openssl rand -hex 32) \
+#   VIEW_PASSWORD=$(openssl rand -base64 18) \
+#     docker compose -f docker-compose.public.yml up -d
+#
+# Ce qui change par rapport au fichier LAN, et pourquoi :
+#
+#   - le port n'est plus publie sur 0.0.0.0 mais sur 127.0.0.1. Sans ca, on aurait
+#     une facade en https et la meme porte en clair juste a cote, sur le 4317.
+#     Si le proxy tourne dans Docker, voir `networks` plus bas : c'est mieux encore,
+#     le port n'est alors publie nulle part.
+#   - VIEW_PASSWORD devient OBLIGATOIRE. Sur un LAN une page libre se defend ; sur
+#     Internet, non.
+#   - LOCAL_EVENT=0 ferme /event, le seul endpoint qui accepte des hooks BRUTS
+#     (prompts, commandes, chemins). Un serveur de flotte n'en a aucun usage : les
+#     postes publient sur /ingest, assainis.
+#
+# DANS LE PROXY, une seule case compte : **Websockets Support**. Les postes publient
+# par WebSocket. Sans elle, la page s'affiche parfaitement et aucun agent ne se
+# connecte jamais — la panne qui a l'air de marcher. Sous Nginx Proxy Manager :
+# Proxy Hosts > le vote > Details > Websockets Support, puis l'onglet SSL (Request a
+# new certificate, Force SSL, HTTP/2).
+services:
+  office:
+    build: .
+    image: claude-office
+    restart: unless-stopped
+    ports:
+      # 127.0.0.1 et pas 0.0.0.0 : joignable par le proxy qui tourne sur cette
+      # machine, par personne d'autre.
+      - "127.0.0.1:4317:4317"
+    environment:
+      # Plus long qu'en LAN : ce jeton est desormais presente depuis Internet.
+      OFFICE_TOKEN: ${OFFICE_TOKEN:?definissez OFFICE_TOKEN, par exemple avec "openssl rand -hex 32"}
+      VIEW_USER: ${VIEW_USER:-office}
+      VIEW_PASSWORD: ${VIEW_PASSWORD:?sur une adresse publique, la page doit avoir un mot de passe}
+      CITY: ${CITY:-Paris}
+      LOCAL_EVENT: "0"
+    volumes:
+      # Le roster, et rien d'autre : la liste des metiers d'agents deja vus. Aucune
+      # activite, aucun projet, aucun nom de poste n'est ecrit sur disque.
+      - roster:/data
+
+    # Proxy DANS Docker (c'est le cas de Nginx Proxy Manager installe par compose) :
+    # retirez le bloc `ports` ci-dessus et decommentez ces trois lignes. Le serveur
+    # n'est alors publie sur AUCUN port de la machine, et le proxy l'atteint par son
+    # nom, `office`, sur le port 4317. Adaptez le nom du reseau au votre :
+    #   docker network ls   puis   networks: [ le_votre ]
+    #
+    # networks:
+    #   - proxy
+
+# networks:
+#   proxy:
+#     external: true
+
+volumes:
+  roster:

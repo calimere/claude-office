@@ -39,6 +39,25 @@
   .label[data-act=coffee] { border-color:#d9a05b; }
   .label[data-act=game], .label[data-act=baby], .label[data-act=billard] { border-color:#8a9fd6; }
   .label[data-act=fall] { border-color:#e0a03c; }
+  /* Plaque de l'îlot : le nom du poste d'où vient la session.
+     Il est déjà tissé dans le tapis — mais la pièce fait 57 m sur 37, et à ce recul
+     son texte mesure trois pixels de haut à l'écran. C'est de la laine, plus du
+     texte. Une plaque en HTML garde sa taille quel que soit le zoom : c'est la seule
+     façon de le rendre lisible sans rapprocher la caméra, et la caméra a mieux à
+     faire. */
+  #plaques { position:fixed; inset:0; pointer-events:none; }
+  .plaque { position:absolute; transform:translate(-50%,-50%); display:flex;
+    align-items:center; gap:6px; padding:3px 9px; border-radius:999px;
+    background:rgba(30,23,18,.78); border:1px solid var(--line); font-size:11px;
+    line-height:1.3; white-space:nowrap; box-shadow:0 3px 10px rgba(0,0,0,.35);
+    backdrop-filter:blur(2px); }
+  /* La pastille reprend la couleur du tapis : la plaque et l'îlot se répondent. */
+  .plaque i { width:7px; height:7px; border-radius:50%; background:var(--tint); flex:none; }
+  .plaque b { font-weight:600; }
+  /* Un seul poste sur le plateau — ou aucun, en mode local : la plaque répéterait
+     le même mot vingt fois. Elle n apparaît que quand elle distingue réellement un
+     îlot d un autre. */
+  #plaques[data-postes=un] .plaque { display:none; }
   #sessions .staff { margin-top:6px; padding-top:6px; border-top:1px solid var(--line);
     color:var(--muted); font-size:10px; }
   @keyframes pulse { 50% { box-shadow:0 0 0 5px rgba(224,105,94,.3); } }
@@ -105,6 +124,7 @@
 </head>
 <body>
 <div id="stage"></div>
+<div id="plaques"></div>
 <div id="labels"></div>
 <div id="hud"><span class="pill">Claude Office</span><span id="status" class="pill">Connexion…</span>
 <span id="sound" class="pill btn" role="button" aria-pressed="false" title="Son des appels">🔕 Son</span>
@@ -1639,33 +1659,46 @@ const FILL_X = POD_X[(POD_X.length - 1) >> 1], FILL_Z = POD_Z[0];
 const fillRank = (s) => Math.hypot(s.x - FILL_X, (s.z - FILL_Z) * 1.35);
 podSlots.sort((a, b) => fillRank(a) - fillRank(b));
 
-// Descente de lit de l'îlot : c'est elle qui porte le nom du projet. Au sol plutôt
-// qu'en panneau suspendu — un panneau en l'air masquait les bureaux du fond et
-// flottait sans rien toucher ; un tapis ancre l'équipe à son emplacement.
-function matTexture(title, sub, tint) {
-  const W = 640, H = 200, PAD = 38, c = document.createElement('canvas');
+// Le nom du poste, tissé DANS le tapis de l'îlot.
+//
+// Il y avait là une descente de lit séparée, posée devant l'ouverture, qui portait le
+// nom du projet. Elle débordait d'un mètre vingt-cinq au-delà du tapis, pile sur le
+// passage : on marchait dessus, et quand deux rangées se faisaient face les deux
+// descentes se chevauchaient. Le nom rentre maintenant dans l'emprise du tapis — on
+// récupère la bande, et le problème de recouvrement part avec elle.
+//
+// Le nom du PROJET, lui, ne s'écrit plus au sol. Il reste là où on peut le lire sans
+// plisser les yeux : la bulle du lead, le panneau Sessions, la fiche d'inspection.
+//
+// Taille fixe en mètres, et pas une fraction du tapis : le tapis change de largeur
+// quand l'équipe grandit, et un nom mis à l'échelle avec lui s'étirerait.
+const NOM_L = 3.2, NOM_P = .62;
+function rugTexture(nom, tint) {
+  const W = 512, H = 100, PAD = 54, c = document.createElement('canvas');
   c.width = W; c.height = H;
   const x = c.getContext('2d');
   const hex = '#' + tint.toString(16).padStart(6, '0');
-  // Laine teintée a la couleur du projet, champ sombre au centre pour que le nom
-  // ressorte sur le parquet.
-  x.fillStyle = hex; x.fillRect(0, 0, W, H);
-  x.fillStyle = 'rgba(34,24,17,.82)'; x.fillRect(14, 14, W - 28, H - 28);
-  x.strokeStyle = hex; x.lineWidth = 3; x.strokeRect(25, 25, W - 50, H - 50);
-  // Frange tissee en haut et en bas : ca se lit comme un tapis, pas comme une dalle.
-  x.fillStyle = hex;
-  for (let i = 0; i < 56; i++) { x.fillRect(15 + i * 11, 1, 5, 10); x.fillRect(15 + i * 11, H - 11, 5, 10); }
-  x.textAlign = 'center';
+  // Fond transparent : le tapis est deja teinte dessous, et un bandeau opaque
+  // referait exactement la dalle qu'on vient de retirer.
+  x.textAlign = 'center'; x.textBaseline = 'middle';
   // Un nom long doit RETRECIR, pas s'ecraser : le maxWidth de fillText le rendait
   // filiforme et illisible de loin. On cherche le plus grand corps qui tienne.
-  let size = 92;
-  for (; size > 26; size -= 3) {
+  let size = 58;
+  for (; size > 20; size -= 2) {
     x.font = '700 ' + size + 'px system-ui,Segoe UI,sans-serif';
-    if (x.measureText(title).width <= W - PAD * 2) break;
+    if (x.measureText(nom).width <= W - PAD * 2) break;
   }
-  x.fillStyle = '#f7eee2'; x.fillText(title, W / 2, 112);
-  x.fillStyle = 'rgba(247,238,226,.46)'; x.font = '400 30px ui-monospace,Consolas,monospace';
-  x.fillText(sub, W / 2, 158, W - PAD * 2);
+  const larg = x.measureText(nom).width;
+  // Deux filets a la couleur de l'ilot, de part et d'autre du nom : ils tiennent le
+  // mot au milieu du tapis et donnent le ton tisse, sans rien masquer du sol.
+  x.strokeStyle = hex; x.lineWidth = 4; x.lineCap = 'round';
+  for (const s of [-1, 1]) {
+    const bord = W / 2 + s * (larg / 2 + 16), bout = W / 2 + s * (W / 2 - 16);
+    x.beginPath(); x.moveTo(bord, H / 2); x.lineTo(bout, H / 2); x.stroke();
+  }
+  // Une ombre portee courte : le nom se lit meme sur la laine claire d'un ilot pale.
+  x.shadowColor = 'rgba(20,13,8,.65)'; x.shadowBlur = 6; x.shadowOffsetY = 2;
+  x.fillStyle = 'rgba(250,243,233,.92)'; x.fillText(nom, W / 2, H / 2 + 1);
   const t = new THREE.CanvasTexture(c); t.anisotropy = 8; return t;
 }
 
@@ -1689,9 +1722,21 @@ function placeBeaconLight() {
   beaconLight.position.set(beaconPod.slot.x, 5.1, beaconPod.slot.z);
 }
 
+const plaquesEl = document.getElementById('plaques');
+
+// Le nom du poste ne vaut d'être affiché que s'il distingue deux îlots. Recalculé
+// quand la composition du plateau change — c'est-à-dire exactement quand un îlot
+// apparaît ou disparaît, et jamais à chaque image.
+function majPostes() {
+  const postes = new Set();
+  for (const p of pods) if (p.poste) postes.add(p.poste);
+  plaquesEl.dataset.postes = postes.size > 1 ? 'plusieurs' : 'un';
+}
+
 class Pod {
-  constructor(title, sub, tint) {
+  constructor(title, sub, tint, poste) {
     this.tint = tint; this.members = new Set(); this.closing = false; this.closed = false;
+    this.title = title; this.poste = poste || '';
     // Au-delà de podSlots.length sessions simultanées, on empile sur l'emplacement
     // le moins chargé ; le comptage garde la libération correcte.
     this.slot = podSlots.find((s) => !s.count)
@@ -1743,12 +1788,28 @@ class Pod {
 
     // Descente de lit devant l'ouverture, entre le portillon et l'allée : elle porte
     // le nom du projet. Posee au ras du sol, a l'exterieur du grand tapis de l'ilot.
-    this.mat = new THREE.Mesh(new THREE.PlaneGeometry(4.0, 1.25),
-      new THREE.MeshBasicMaterial({ map: matTexture(title, sub, tint), transparent: true }));
-    this.mat.rotation.x = -Math.PI / 2;
-    this.mat.position.set(x, .04, z + 3.8 * open);
-    this.mat.userData.pod = this; // cliquable comme le tapis de l'ilot
-    this.g.add(this.mat);
+    this.nom = new THREE.Mesh(new THREE.PlaneGeometry(NOM_L, NOM_P),
+      new THREE.MeshBasicMaterial({ map: rugTexture(sub, tint), transparent: true }));
+    this.nom.rotation.x = -Math.PI / 2;
+    this.nom.position.set(x, .075, z);
+    this.nom.userData.pod = this; // cliquable comme le tapis de l'ilot
+    this.g.add(this.nom);
+
+    // La plaque : le même nom de poste, à l'écran, au-dessus de l'endroit où il est
+    // tissé. Le tapis est au sol d'une pièce de 57 m sur 37 : à ce recul, son texte
+    // mesure trois pixels de haut. Une plaque en HTML garde sa taille quel que soit
+    // le zoom — c'est la seule façon de le rendre lisible sans rapprocher la caméra,
+    // et la caméra a mieux à faire.
+    //
+    // textContent et pas innerHTML : un nom de poste vient d'une autre machine, et
+    // personne n'a promis qu'il ne contenait pas de chevrons.
+    this.plaque = document.createElement('div');
+    this.plaque.className = 'plaque';
+    this.plaque.style.setProperty('--tint', '#' + tint.toString(16).padStart(6, '0'));
+    this.plaque.append(document.createElement('i'));
+    const etiq = document.createElement('b'); etiq.textContent = this.poste;
+    this.plaque.append(etiq);
+    plaquesEl.append(this.plaque);
 
     // Gyrophare : eteint la plupart du temps, il s'allume quand la session appelle.
     this.beacon = new THREE.Mesh(new THREE.SphereGeometry(.26, 14, 12),
@@ -1767,7 +1828,7 @@ class Pod {
     // Les autres s'ajoutent quand des agents arrivent.
     this.desks = [];
     this.addDesk();
-    pods.add(this); invalidateNav(); framePods();
+    pods.add(this); invalidateNav(); framePods(); majPostes();
   }
 
   // Un bureau de plus, posé à la suite. Les positions déjà attribuées ne bougent
@@ -1806,9 +1867,10 @@ class Pod {
     this.edge.position.set(cx, .02, cz);
     // Moitiés réelles de l'emprise au sol de l'îlot, telle qu'elle est dessinée.
     this.half = { x: w / 2, z: d / 2, cx, cz };
-    // La descente de lit et le portillon restent devant l'ouverture, alignés sur le
-    // bord du tapis — qui vient de bouger.
-    if (this.mat) this.mat.position.set(cx, .04, cz + this.open * (d / 2 + 1.1));
+    // Le nom se range sur le bord ouvert du tapis, juste en retrait : c'est la seule
+    // bande que les bureaux ne couvrent pas. Il reste DANS l'emprise — un nom qui
+    // dépasserait rendrait la bande qu'on vient de gagner.
+    if (this.nom) this.nom.position.set(cx, .075, cz + this.open * (d / 2 - NOM_P / 2 - .22));
     this.gate = new V3(cx, 0, cz + this.open * (d / 2 + .4));
   }
   // Une place de plus quand il le faut : l'îlot pousse un bureau plutôt que de
@@ -1876,7 +1938,8 @@ class Pod {
   dispose() {
     scene.remove(this.g);
     this.g.traverse((o) => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); });
-    this.slot.count--; pods.delete(this); invalidateNav(); framePods();
+    this.plaque.remove();
+    this.slot.count--; pods.delete(this); invalidateNav(); framePods(); majPostes();
     // L'ilot demonte pouvait porter la lumiere du gyrophare : elle doit retrouver
     // un porteur, ou s'eteindre.
     if (beaconPod === this) placeBeaconLight();
@@ -2712,6 +2775,23 @@ class Agent {
 //
 // Lectures et ecritures du DOM sont separees en deux boucles : les melanger forcerait
 // un recalcul de mise en page du navigateur a chaque etiquette, a chaque frame.
+// Les plaques d'îlots, projetées comme les bulles mais sans désempilement : un îlot
+// ne se déplace pas, et deux plaques ne peuvent se recouvrir que si deux îlots se
+// recouvrent — auquel cas le problème n'est pas la plaque.
+//
+// En pastille, la caméra est si loin que les personnages eux-mêmes ne sont plus que
+// des points : vingt plaques y masqueraient la pièce qu'on vient regarder.
+function layoutPlaques() {
+  const montrer = labelDensity !== 'pastille';
+  plaquesEl.hidden = !montrer;
+  if (!montrer) return;
+  for (const p of pods) {
+    tmp.copy(p.nom.position); tmp.project(cam);
+    p.plaque.style.left = ((tmp.x * .5 + .5) * innerWidth) + 'px';
+    p.plaque.style.top = ((-tmp.y * .5 + .5) * innerHeight) + 'px';
+  }
+}
+
 const LABEL_GAP = 4;
 // Glissement maximal d'une étiquette désempilée, en pixels. Environ deux hauteurs
 // d'étiquette : au-delà, on ne sait plus à qui elle appartient.
@@ -2895,7 +2975,8 @@ function handle(ev) {
     // Sous le nom du projet : le poste en mode flotte, l'identifiant de session en
     // local. Sur un plateau qui mélange plusieurs machines, savoir CHEZ QUI se passe
     // un dossier vaut mieux que huit caractères d'UUID.
-    const pod = new Pod(project, ev.machine || sid.slice(0, 8), TINTS[podCount++ % TINTS.length]);
+    const pod = new Pod(project, ev.machine || sid.slice(0, 8),
+      TINTS[podCount++ % TINTS.length], ev.machine);
     s = {
       sid, cwd: ev.cwd || '', project, pod, subs: [], machine: ev.machine || '',
       main: new Agent(sid, { name: project, kind: 'main', pod }),
@@ -3748,6 +3829,7 @@ renderer.setAnimationLoop(() => {
   controls.target.lerp(camTarget, 1 - Math.exp(-dt * 2.5)); // glisse vers le nouveau cadrage
   controls.update();
   if (composer) composer.render(); else renderer.render(scene, cam);
+  layoutPlaques();
   layoutLabels();
   if (selection) renderDetail();
   hintEl.style.display = mode === 'live' && sessions.size === 0 ? 'block' : 'none';

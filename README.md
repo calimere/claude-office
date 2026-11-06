@@ -495,6 +495,7 @@ OFFICE_TOKEN=$(openssl rand -hex 16) docker compose up -d
 | `CITY` | `Paris` | ville de la météo — seul appel sortant du serveur |
 | `ROSTER_FILE` | `.roster.json` | le seul fichier écrit |
 | `ALLOW_REMOTE_EVENT` | `0` | ouvre `/event` au réseau. **À laisser à `0`** : cet endpoint accepte des hooks bruts |
+| `LOCAL_EVENT` | `1` (`0` dans les deux compose) | `0` ferme `/event`. Un serveur de flotte n'en a aucun usage : les postes publient sur `/ingest`, assainis |
 | `OFFLINE_GRACE` | `20000` | délai avant d'annoncer qu'un poste coupé brutalement ne répond plus |
 | `ABSENT_TTL` | `3600000` | au bout de combien de temps un poste absent perd ses îlots |
 | `SWEEP_EVERY` | `15000` | période du ping qui révèle les sockets mortes |
@@ -502,8 +503,60 @@ OFFICE_TOKEN=$(openssl rand -hex 16) docker compose up -d
 Le jeton n'est jamais vide : sans valeur fournie, le serveur en tire un au hasard et
 l'affiche au démarrage. Zéro configuration, mais jamais ouvert.
 
-Sur un LAN, la page reste libre. Pour une adresse publique : un reverse proxy TLS devant,
-`VIEW_PASSWORD` rempli, et le port 4317 non publié.
+Sur un LAN, la page reste libre.
+
+### Sur une adresse publique, en HTTPS
+
+`docker-compose.public.yml` part du principe que tu as déjà un reverse proxy — Nginx
+Proxy Manager, Traefik, un nginx à la main. C'est lui qui porte le certificat.
+
+```sh
+OFFICE_TOKEN=$(openssl rand -hex 32) \
+VIEW_PASSWORD=$(openssl rand -base64 18) \
+  docker compose -f docker-compose.public.yml up -d
+```
+
+Trois choses changent, et chacune ferme une porte :
+
+| | LAN | Public |
+|---|---|---|
+| port 4317 | publié sur `0.0.0.0` | publié sur `127.0.0.1` seulement, ou sur aucun port si le proxy est dans Docker |
+| `VIEW_PASSWORD` | vide, page libre | **obligatoire** — le fichier refuse de démarrer sans |
+| `LOCAL_EVENT` | `0` | `0` — ferme `/event`, le seul endpoint qui accepte du **brut** |
+
+**Dans le proxy, une seule case compte : Websockets Support.** Les postes publient par
+WebSocket. Sans elle, la page s'affiche parfaitement et aucun agent ne se connecte
+jamais. Sous Nginx Proxy Manager : *Proxy Hosts → Details → Websockets Support*, puis
+l'onglet *SSL* (*Request a new certificate*, *Force SSL*, *HTTP/2*). Pas de réglage de
+timeout à prévoir : il passe quelque chose sur la socket toutes les 10 s au plus
+(instantané de l'agent 10 s, ping serveur 15 s, ping agent 20 s), là où nginx coupe à
+60 s d'inactivité.
+
+Côté agent, rien à changer : `-server https://bureau.exemple.fr` suffit. Le client
+bascule tout seul en `wss://`, pose le SNI et vérifie la chaîne du certificat.
+
+#### Le piège qu'on ne voit pas
+
+`/event` diffuse la charge utile **brute** — prompts, commandes, chemins. Il était
+protégé par `req.socket.remoteAddress === '127.0.0.1'`.
+
+Derrière un reverse proxy, **toutes** les requêtes viennent de 127.0.0.1. La protection
+ne tombait pas en panne : elle s'inversait, en silence, au moment précis où l'on passe
+d'un LAN à Internet. Un POST refusé en direct passait à travers le proxy — vérifié, puis
+corrigé : un en-tête de transfert (`X-Forwarded-For` et consorts) vaut désormais preuve
+qu'un intermédiaire est passé par là, donc que la requête n'est pas locale. On peut
+forger ces en-têtes, mais seulement pour se faire **refuser**. Et `LOCAL_EVENT=0` ferme
+la porte pour de bon, ce que fait maintenant chacun des deux fichiers compose.
+
+#### Ce qui reste ouvert
+
+- **Un seul jeton pour tous les postes.** S'il fuite, n'importe qui peut publier de
+  fausses sessions (jamais lire : `/stream` est derrière le mot de passe). Des jetons
+  par poste restent à faire.
+- **Pas de limitation de débit** sur l'authentification de la page. Un mot de passe
+  long, et la limitation du proxy si tu veux une ceinture de plus.
+- `/health` (nombre de postes, rien d'autre) et `/install.html` répondent **avant** le
+  mot de passe : c'est voulu, un collègue qui vient s'installer ne l'a pas encore.
 
 ### État d'avancement
 

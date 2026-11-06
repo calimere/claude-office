@@ -109,7 +109,15 @@ const ctx2d = new Proxy({}, {
 const listeners = {};
 function mkEl(tag) {
   const el = {
-    tagName: tag, width: 0, height: 0, style: {}, dataset: {}, children: [],
+    // Un vrai style porte setProperty/getPropertyValue, et c est par la que passent
+    // les variables CSS. Un objet nu laissait la page tomber sur « setProperty is not
+    // a function » — une panne du harnais qui ressemble a une panne de la page.
+    tagName: tag, width: 0, height: 0, dataset: {}, children: [],
+    style: Object.assign(Object.create({
+      setProperty(k, v) { this[k] = v; },
+      getPropertyValue(k) { return this[k] ?? ''; },
+      removeProperty(k) { delete this[k]; },
+    }), {}),
     className: '', textContent: '', value: '35', hidden: false, title: '', href: '',
     rel: '', type: '', id: '',
     getContext: () => ctx2d, toDataURL: () => 'data:image/png;base64,AA',
@@ -174,7 +182,15 @@ src += '\n;globalThis.__plan = { ROOM, POD_X, POD_Z, AISLES, aisleFor, NAV,'
   + '\n;globalThis.__places = { COFFEE_SPOTS, COUCH_SPOTS, STAND_SPOTS, LUNCH_SPOTS, JEU_SPOTS,'
   + ' buildNav, navCell, DOOR };'
   + '\n;globalThis.__cam = () => ({ cible: { x: camTarget.x, z: camTarget.z }, span: camSpan,'
-  + ' ilots: [...pods].map((p) => ({ x: p.slot.x, z: p.slot.z })) });';
+  + ' ilots: [...pods].map((p) => ({ x: p.slot.x, z: p.slot.z })) });'
+  + '\n;globalThis.__plaques = () => ({ noeuds: plaquesEl.children.length,'
+  + ' postes: plaquesEl.dataset.postes, ilots: pods.size,'
+  + ' distincts: new Set([...pods].map((p) => p.poste).filter(Boolean)).size,'
+  + ' textes: [...pods].map((p) => p.plaque.children.map((c) => c.textContent).join("|")),'
+  // L emprise reelle : le tapis tel qu il est dessine, et le nom tel qu il est pose.
+  // De quoi verifier que le second ne sort pas du premier.
+  + ' emprises: [...pods].map((p) => ({ tapis: p.half, nom: { x: p.nom.position.x,'
+  + ' z: p.nom.position.z, l: NOM_L, p: NOM_P } })) });';
 
 let bad = 0;
 // Le troisieme argument est le DIAGNOSTIC : ce qu on a obtenu au lieu de ce qu on
@@ -344,6 +360,86 @@ if (!STREAM) {
   try { for (const ev of fleet) STREAM.deliver(ev); } catch (e) { fleetErr = e; }
   check(!fleetErr, 'les evenements de flotte traversent handle()'
     + (fleetErr ? ' — ' + fleetErr.constructor.name + ' : ' + fleetErr.message : ''));
+}
+
+/* ---------- Le nom du poste : dans le tapis, et sur la plaque ---------- */
+// Le nom du poste est tisse dans le tapis de l ilot. Il y avait avant une descente
+// de lit separee, qui portait le nom du projet et debordait d un metre vingt-cinq
+// sur l allee : on marchait dessus, et deux rangees face a face voyaient leurs
+// descentes se chevaucher. Les garanties a tenir sont donc : le nom reste DANS
+// l emprise du tapis (c est tout l objet de la manoeuvre), un noeud de plaque par
+// ilot et pas un de plus, et un nom de poste qui ne s affiche que s il distingue
+// vraiment deux ilots l un de l autre.
+{
+  const vie = globalThis.__vie, plq = globalThis.__plaques;
+  if (!vie || !STREAM || !plq) {
+    check(false, 'les plaques sont accessibles depuis le test');
+  } else {
+    const avant = plq();
+    STREAM.deliver({ session_id: 'pc-a:1111', machine: 'pc-a', fleet: true,
+      cwd: 'facturation', hook_event_name: 'SessionStart' });
+    const un = plq();
+    check(un.noeuds === un.ilots, 'un noeud de plaque par ilot, pas un de plus',
+      { noeuds: un.noeuds, ilots: un.ilots });
+    check(un.textes.some((t) => t.includes('pc-a')),
+      'la plaque porte le nom du poste', un.textes);
+
+    // La garantie qui a motive le changement, verifiee sur TOUS les ilots du
+    // plateau. C est quand le tapis change de taille que le nom peut se retrouver
+    // dehors : on fait donc grossir une equipe jusqu au plafond avant de regarder,
+    // et on regarde apres chaque arrivee, pas seulement a la fin.
+    const sorti = ({ tapis, nom }) =>
+      Math.abs(nom.x - tapis.cx) + nom.l / 2 > tapis.x + 1e-9
+      || Math.abs(nom.z - tapis.cz) + nom.p / 2 > tapis.z + 1e-9;
+    const dehors = [];
+    for (let k = 0; k < 5; k++) {
+      STREAM.deliver({ session_id: 'pc-a:1111', machine: 'pc-a', fleet: true,
+        hook_event_name: 'PreToolUse', act: 'task', tool_name: 'Agent',
+        tool_input: { subagent_type: 'Explore' }, tool_use_id: 'plq' + k });
+      dehors.push(...plq().emprises.filter(sorti));
+    }
+    check(dehors.length === 0,
+      'le nom reste dans l emprise du tapis, a toutes les tailles d equipe',
+      dehors.slice(0, 2));
+    // L INVARIANT, pas un instantane : d autres epreuves ont deja pose des postes sur
+    // le plateau, et une assertion ecrite sur « il y en a un » passerait ou echouerait
+    // selon l ordre des epreuves plutot que selon le code.
+    const regle = (e) => e.postes === (e.distincts > 1 ? 'plusieurs' : 'un');
+    check(regle(un), 'le nom du poste s affiche exactement quand il y a plus d un poste',
+      { postes: un.postes, distincts: un.distincts });
+
+    STREAM.deliver({ session_id: 'pc-b:2222', machine: 'pc-b', fleet: true,
+      cwd: 'facturation', hook_event_name: 'SessionStart' });
+    const deux = plq();
+    check(regle(deux) && deux.distincts > 1,
+      'un poste de plus, et la regle tient toujours',
+      { postes: deux.postes, distincts: deux.distincts });
+    check(deux.textes.some((t) => t.includes('pc-b')),
+      'et c est bien le poste qui est ecrit sur la plaque', deux.textes);
+
+    // En local il n y a pas de machine : le tapis se rabat sur l identifiant de
+    // session, mais la plaque ne doit PAS le faire passer pour un nom de poste.
+    const avantLocal = plq().distincts;
+    STREAM.deliver({ session_id: 'ffff9999-local', cwd: 'sans-flotte',
+      hook_event_name: 'SessionStart' });
+    const local = plq();
+    check(local.distincts === avantLocal,
+      'une session locale n a pas de poste : elle n en invente pas un',
+      { avant: avantLocal, apres: local.distincts });
+    check(!local.textes.some((t) => t.includes('ffff9999')),
+      'et son identifiant de session ne se fait pas passer pour un nom de poste',
+      local.textes);
+
+    // Le depart doit RETIRER le noeud. Un plateau qui tourne toute la journee
+    // accumulerait sinon une plaque morte par session terminee, invisible a l ecran
+    // et bien presente dans le document.
+    STREAM.deliver({ session_id: 'pc-b:2222', hook_event_name: 'SessionEnd', fleet: true });
+    for (let i = 0; i < 400; i++) { if (plq().ilots < deux.ilots) break; vie.applyEndOfDay?.(false); }
+    const apres = plq();
+    check(apres.noeuds === apres.ilots,
+      'une plaque disparait avec son ilot, elle ne reste pas dans le document',
+      { noeuds: apres.noeuds, ilots: apres.ilots, avant: avant.noeuds });
+  }
 }
 
 /* ---------- Pauses subies et fin de journee ---------- */
