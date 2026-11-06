@@ -1,0 +1,8 @@
+# Un script shell en CRLF echoue sur Linux des la premiere ligne :
+#   ./installer.sh: /bin/sh^M: bad interpreter
+# Et comme paquet.sh fabrique les archives Linux DEPUIS un poste Windows, la
+# conversion automatique de Git suffirait a expedier un installateur mort.
+*.sh text eol=lf
+
+# A l'inverse, ceux-la sont lus par cmd.exe et le Bloc-notes.
+*.bat text eol=crlf
