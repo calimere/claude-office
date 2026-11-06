@@ -639,6 +639,30 @@ if (!STREAM) {
       const r = horsChamp();
       check(r.dehors.length === 0,
         'a ' + n + ' ilot' + (n > 1 ? 's' : '') + ', tous sont dans le cadre', r);
+      // Et la PIECE entiere, murs et aile compris : ses quatre coins doivent tenir.
+      const ROOM = globalThis.__plan.ROOM;
+      const c = cam();
+      const su = (x, z) => -(x + z) / R6, sr = (x, z) => (x - z) / R2;
+      const cu = su(c.cible.x, c.cible.z), cr = sr(c.cible.x, c.cible.z);
+      const coinsDehors = [];
+      for (const x of [ROOM.left, ROOM.right]) {
+        for (const z of [ROOM.back, ROOM.front]) {
+          if (Math.abs(su(x, z) - cu) > c.span || Math.abs(sr(x, z) - cr) > c.span * aspect) {
+            coinsDehors.push(x + ',' + z);
+          }
+        }
+      }
+      check(coinsDehors.length === 0,
+        'a ' + n + ' ilot' + (n > 1 ? 's' : '') + ', toute la piece tient dans le cadre',
+        { coins: coinsDehors, span: +c.span.toFixed(1) });
+      // La garantie elle-meme, independamment du contenu : le cadre est au moins
+      // aussi haut que la piece. Dans une maison deja peuplee, la boite du contenu
+      // couvre les murs toute seule et la verification des coins passe sans rien
+      // prouver — c'est cette ligne qui tiendra le jour ou la piece sera vide.
+      const spanPiece = (ROOM.w + ROOM.d) / (2 * R6);
+      check(c.span >= spanPiece,
+        'a ' + n + ' ilot' + (n > 1 ? 's' : '') + ', le cadre couvre au moins la piece',
+        { span: +c.span.toFixed(1), minimum: +spanPiece.toFixed(1) });
       for (let i = 0; i < n; i++) {
         STREAM.deliver({ session_id: 'cadre-' + n + '-' + i, hook_event_name: 'SessionEnd' });
       }

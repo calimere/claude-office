@@ -1919,21 +1919,23 @@ function framePods() {
   const CONTEXTE = 5.8;
   const etendue = (x1 - x0 + 6.1) + (z1 - z0 + 6.3);
   // camSpan est la DEMI-hauteur du cadre, d'ou le 2 au denominateur.
-  const vise = Math.max(8.5, etendue / (2 * Math.sqrt(6)) * 1.08 + CONTEXTE);
-  // Hysteresis. Le cadrage suit maintenant des gens qui marchent, et il est
-  // recalcule plusieurs fois par seconde : sans seuil, le zoom respirerait en
-  // permanence au rythme des pas. On ne bouge que pour un vrai changement — quand
-  // quelqu'un part au cafe, pas quand il se deplace de trente centimetres.
+  const contenu = Math.max(8.5, etendue / (2 * Math.sqrt(6)) * 1.08 + CONTEXTE);
+
+  // LA PIECE ENTIERE, TOUJOURS. Depuis que l'aile de droite abrite trois salles, un
+  // cadrage sur le seul contenu les laissait au bord et finissait par les couper :
+  // la cantine, le coin loisir et la salle serveur existent meme quand personne n'y
+  // est, et un bureau qu'on regarde comme un aquarium se regarde en entier.
+  //
+  // En isometrique, la piece occupe (w + d) / racine(6) de hauteur a l'ecran ; la
+  // demi-hauteur en est la moitie. Le facteur 1,06 laisse un filet de marge.
+  const spanPiece = (ROOM.w + ROOM.d) / (2 * Math.sqrt(6)) * 1.06;
+  const vise = Math.max(contenu, spanPiece);
+
+  // Hysteresis : on ne bouge que pour un vrai changement. En pratique le cadre est
+  // fixe, puisque le contenu ne peut pas deborder des murs — mais le seuil protege
+  // le jour ou la grille s'agrandirait au-dela.
   if (Math.abs(vise - camSpan) / camSpan > .04) camSpan = vise;
-  // Plus le cadre est large, plus il doit regarder le centre de la PIECE plutot que
-  // celui des ilots. Sans ce glissement, trois sessions dans une piece de vingt
-  // places font cadrer un coin : le parquet sort du champ et l'ecran est a moitie
-  // noir. A pleine charge les deux centres se confondent, et le melange ne se voit
-  // pas. En isometrique, la piece occupe (w + d) / racine(6) de hauteur a l'ecran.
-  const spanPiece = (ROOM.w + ROOM.d) / Math.sqrt(6) / 2;
-  const k = clamp01(camSpan / spanPiece);
-  const vers = (a, b) => a + (b - a) * k;
-  camTarget.set(vers((x0 + x1) / 2, 0), 0, vers((z0 + z1) / 2, ROOM.cz));
+  camTarget.set(ROOM.cx, 0, ROOM.cz);
   resize();
 }
 
