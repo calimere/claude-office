@@ -201,14 +201,39 @@ addEventListener('resize', resize); resize();
 // D'où `front` et `back` plutôt qu'une profondeur centrée sur l'origine : le centre
 // géométrique de la pièce (`cz`) n'est plus z = 0, et tout ce qui est posé contre un
 // mur se place désormais par rapport à ce mur, jamais par rapport à l'origine.
-const ROOM = { w: 46, front: 11, back: -26 };
+// La pièce n'est plus symétrique en x non plus. Elle s'étend vers la DROITE pour
+// loger la cantine, sans toucher au mur de gauche, qui porte le tableau blanc et la
+// porte. D'où `left` et `right` plutôt qu'une largeur centrée sur l'origine — même
+// raisonnement que `front` et `back`, pour la même raison : on agrandit d'un seul
+// côté, et tout ce qui est accroché à un mur doit suivre CE mur.
+const ROOM = { left: -23, right: 34, front: 11, back: -26 };
+ROOM.w = ROOM.right - ROOM.left;
+ROOM.cx = (ROOM.left + ROOM.right) / 2;
 ROOM.d = ROOM.front - ROOM.back;
 ROOM.cz = (ROOM.front + ROOM.back) / 2;
 // Raccourcis de lecture : « contre le mur de gauche », « contre le mur du fond ».
-const wallL = (k) => -ROOM.w / 2 + k;
-const wallR = (k) => ROOM.w / 2 - k;
+const wallL = (k) => ROOM.left + k;
+const wallR = (k) => ROOM.right - k;
 const wallB = (k) => ROOM.back + k;
 const wallF = (k) => ROOM.front - k;
+
+// Grille d'emplacements — 5 colonnes × 4 rangées = 20 sessions simultanées visibles.
+//
+// Les rangées vont par PAIRES. Chaque paire encadre une allée, et les deux rangées
+// s'ouvrent dessus ; entre deux paires, les îlots se tournent le dos. C'est ce qui
+// permet d'ajouter des rangées sans ajouter des allées : quatre rangées, deux allées.
+// L'écart de 9 à l'intérieur d'une paire laisse la place d'y marcher (6,1 d'îlot +
+// 2,9 d'allée) ; l'écart de 7,5 entre deux paires n'est qu'un interstice, comme
+// entre deux colonnes.
+//
+// L'ordre compte : la rangée la plus proche de la caméra vient en premier, donc une
+// maison peu chargée s'installe au premier plan plutôt qu'au fond.
+const POD_X = [-13.5, -6, 1.5, 9, 16.5];
+const POD_Z = [4.5, -4.5, -12, -21];
+// Les allées, et la façon de trouver la sienne. Tout déplacement passe par une allée
+// puis par le couloir de gauche, qui les relie toutes.
+const AISLES = [0, -16.5];
+const aisleFor = (z) => AISLES.reduce((a, b) => (Math.abs(b - z) < Math.abs(a - z) ? b : a));
 
 // Lumière d'intérieur : ciel tiède, rebond chaud du parquet, soleil rasant adouci.
 scene.add(new THREE.HemisphereLight(0xffe7cc, 0x4a3426, 0.85));
@@ -467,19 +492,19 @@ function parquetTexture() {
   t.anisotropy = 8; return t;
 }
 
-const floor = box(ROOM.w, .2, ROOM.d, 0x4a3524); floor.position.set(0, -.1, ROOM.cz); scene.add(floor);
+const floor = box(ROOM.w, .2, ROOM.d, 0x4a3524); floor.position.set(ROOM.cx, -.1, ROOM.cz); scene.add(floor);
 const floorTop = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.w, ROOM.d),
   new THREE.MeshStandardMaterial({ map: parquetTexture(), roughness: .88 }));
-floorTop.rotation.x = -Math.PI / 2; floorTop.position.set(0, .002, ROOM.cz);
+floorTop.rotation.x = -Math.PI / 2; floorTop.position.set(ROOM.cx, .002, ROOM.cz);
 floorTop.receiveShadow = true; scene.add(floorTop);
 
 // Murs : plâtre tiède + soubassement bois, nettement plus doux qu'un gris-bleu.
 const PLASTER = 0xa89079, WAINSCOT = 0x6d4b33;
-const back = box(ROOM.w, 3.6, .2, PLASTER); back.position.set(0, 1.8, wallB(-.1)); scene.add(back);
+const back = box(ROOM.w, 3.6, .2, PLASTER); back.position.set(ROOM.cx, 1.8, wallB(-.1)); scene.add(back);
 const left = box(.2, 3.6, ROOM.d, PLASTER); left.position.set(wallL(-.1), 1.8, ROOM.cz); scene.add(left);
-const backLow = box(ROOM.w, 1.05, .08, WAINSCOT); backLow.position.set(0, .52, wallB(.01)); scene.add(backLow);
+const backLow = box(ROOM.w, 1.05, .08, WAINSCOT); backLow.position.set(ROOM.cx, .52, wallB(.01)); scene.add(backLow);
 const leftLow = box(.08, 1.05, ROOM.d, WAINSCOT); leftLow.position.set(wallL(.01), .52, ROOM.cz); scene.add(leftLow);
-const backRail = box(ROOM.w, .09, .13, 0x5c3f2a); backRail.position.set(0, 1.07, wallB(.02)); scene.add(backRail);
+const backRail = box(ROOM.w, .09, .13, 0x5c3f2a); backRail.position.set(ROOM.cx, 1.07, wallB(.02)); scene.add(backRail);
 const leftRail = box(.13, .09, ROOM.d, 0x5c3f2a); leftRail.position.set(wallL(.02), 1.07, ROOM.cz); scene.add(leftRail);
 
 // La porte reste à l'avant gauche : c'est par là qu'on arrive, et le couloir de
@@ -612,11 +637,16 @@ function claimSpot() { const s = COFFEE_SPOTS.find((k) => !k.busy); if (s) s.bus
 // devant lui nous font face. On ne voit jamais l'image — on voit sa lueur sur les
 // visages. Un televiseur et un canape se faisant face, l'un des deux est forcement
 // de dos en vue isometrique : ce sont les gens qu'on garde.
-const LOUNGE_X = 0, LOUNGE_Z = 8.45, TV_Z = 10.6;
+// Le salon a quitte la bande avant pour la salle de loisir. Le principe tient :
+// le canape est DEVANT le televiseur en z, donc ceux qui y sont assis regardent
+// vers la camera, et l ecran lui tourne le dos. Un televiseur et un canape se
+// faisant face, l un des deux est de dos en vue isometrique : ce sont les gens
+// qu on garde.
+const LOUNGE_X = 28, LOUNGE_Z = -4, TV_Z = LOUNGE_Z + 2.15;
 
 // Tapis : delimite le coin salon dans une bande sans cloison ni mur.
 const loungeRug = box(5.8, .03, 3.2, 0x6b4a52, { roughness: 1 });
-loungeRug.position.set(LOUNGE_X, .015, 9.3); // 9.3 ± 1.6 : tient dans la piece (z ≤ 11)
+loungeRug.position.set(LOUNGE_X, .015, LOUNGE_Z + .85);
 loungeRug.castShadow = false; loungeRug.receiveShadow = true; scene.add(loungeRug);
 
 // Canape tourne vers +z : dossier cote fond, on s'y assoit face au televiseur.
@@ -632,12 +662,12 @@ for (const dx of [-1.15, 0, 1.15]) { // coussins, un par place
 // Table basse et magazines, entre le canape et le televiseur.
 // Reculee a 9.85 : elle degage la voie z = 9.35 devant le canape, par laquelle on
 // gagne sa place. Sans ce passage, on s'asseyait en traversant l'accoudoir.
-const lowTable = box(1.7, .1, .7, 0x8a6442); lowTable.position.set(LOUNGE_X, .42, 9.85); scene.add(lowTable);
+const lowTable = box(1.7, .1, .7, 0x8a6442); lowTable.position.set(LOUNGE_X, .42, LOUNGE_Z + 1.4); scene.add(lowTable);
 for (const [dx, col] of [[-.36, 0xd2a35c], [.3, 0xb5553f]]) {
-  const mag = box(.42, .03, .44, col); mag.position.set(LOUNGE_X + dx, .49, 9.85); scene.add(mag);
+  const mag = box(.42, .03, .44, col); mag.position.set(LOUNGE_X + dx, .49, LOUNGE_Z + 1.4); scene.add(mag);
 }
 for (const dx of [-1.05, 1.05]) {
-  const leg = box(.08, .32, .08, 0x6b4e35); leg.position.set(LOUNGE_X + dx, .21, 9.85); scene.add(leg);
+  const leg = box(.08, .32, .08, 0x6b4e35); leg.position.set(LOUNGE_X + dx, .21, LOUNGE_Z + 1.4); scene.add(leg);
 }
 
 // Televiseur et console, de dos. Le corps est une simple dalle sombre : il n'y a pas
@@ -653,7 +683,7 @@ const tvLight = new THREE.PointLight(0x6fa3d6, 0, 8, 2);
 tvLight.position.set(LOUNGE_X, 1.2, TV_Z - .75); scene.add(tvLight);
 
 // Voie d'acces au canape : entre le bord de l'assise (9.15) et la table (9.50).
-const COUCH_LANE_Z = 9.35;
+const COUCH_LANE_Z = LOUNGE_Z + .9;
 
 // Places du canape : assises, tournees vers le televiseur, donc vers la camera.
 const COUCH_SPOTS = [-1.15, 0, 1.15].map((dx) => ({
@@ -670,54 +700,177 @@ const COUCH_SPOTS = [-1.15, 0, 1.15].map((dx) => ({
 // la piece, et une maison de vingt ilots peut compter bien plus d'employes que les
 // six places d'origine. Six places pour cinquante personnes, ce sont quarante-quatre
 // employes plantes a l'origine de la scene.
+// L'AILE DE DROITE, déclarée ici parce que les places debout s'arrêtent à sa cloison.
+//
+// La pièce s'étend vers la droite sur toute sa profondeur, et cette bande de onze
+// unités est découpée en trois salles vitrées, du plus fréquenté au plus technique :
+// la cantine devant, le coin loisir au milieu, la salle serveur au fond. Chacune a
+// son ouverture sur l'open space.
+//
+// Les trois se suivent sans trou : la fin de l'une est le début de la suivante,
+// pour qu'aucune bande de parquet ne reste coincée entre deux cloisons.
+const AILE_X = 23;
+const SALLES = {
+  cantine: { z0: 0, z1: ROOM.front, porte: [4.8, 7.0] },
+  loisir: { z0: -13, z1: 0, porte: [-7.4, -5.2] },
+  serveur: { z0: ROOM.back, z1: -13, porte: [-20.5, -18.3] },
+};
+const CANTINE = { x: AILE_X, z: SALLES.cantine.z0, porte: SALLES.cantine.porte };
 const STAND_Z = wallF(1.7);
+// Deux tronçons, de part et d'autre du salon. Celui de droite est neuf : la table
+// du midi occupait cette bande, et sa migration vers la cantine l'a libérée. C'est
+// aussi ce qui règle le manque de places — on passe de 24 à une quarantaine, pour
+// une maison qui peut compter quatre-vingts employés.
 const STAND_SPOTS = [];
-for (let x = wallL(2.8); x < LOUNGE_X - 3.6; x += 1.4) {
-  if (x > -8.4 && x < -5.2) continue; // la plante
-  STAND_SPOTS.push({
-    pos: new V3(x, 0, STAND_Z), kind: 'stand', busy: false,
-    face: Math.atan2(x - LOUNGE_X, STAND_Z - LOUNGE_Z), // tourne vers le salon, comme on discute
-  });
+for (const [debut, fin] of [[wallL(2.8), LOUNGE_X - 3.6], [LOUNGE_X + 3.6, CANTINE.x - 1.8]]) {
+  for (let x = debut; x < fin; x += 1.4) {
+    if (x > -8.4 && x < -5.2) continue; // la plante
+    STAND_SPOTS.push({
+      pos: new V3(x, 0, STAND_Z), kind: 'stand', busy: false,
+      // Tournes vers l open space : le salon est parti dans l aile, on ne va pas
+      // les faire regarder une cloison a quinze unites de la.
+      face: Math.atan2(x * .12, 4),
+    });
+  }
 }
 
 /* ---------- La table du midi ---------- */
 // Entre le salon et le coin cafe, la bande avant etait vide sur quatorze unites.
 // Une grande table et ses chaises : c'est le seul meuble de la piece qui ne serve
 // qu'a une heure precise.
-// La bande avant ne fait que 3,3 entre le dernier ilot et le mur : une table avec
-// des chaises des DEUX cotes y tiendrait a dix centimetres pres, et fermerait le
-// passage. Une seule rangee de chaises, cote ilots, comme a une table de cantine —
-// on mange cote a cote, face a la baie.
-const LUNCH_X = 10.2, LUNCH_Z = wallF(1.1), LUNCH_CHAISE_Z = LUNCH_Z - 1.25;
-const lunchTop = box(5.2, .1, 1.3, 0xa5784f); lunchTop.position.set(LUNCH_X, .78, LUNCH_Z);
-scene.add(lunchTop);
-for (const dx of [-2.3, 2.3]) {
-  for (const dz of [-.45, .45]) {
-    const p = box(.12, .78, .12, 0x6b4e35); p.position.set(LUNCH_X + dx, .39, LUNCH_Z + dz);
-    scene.add(p);
+/* ---------- La cantine ---------- */
+// La bande avant ne faisait que 3,45 de profondeur, et devait loger le café, le
+// salon, les places debout ET une table : tout s'y entassait, et cinq chaises pour
+// quatre-vingts employés possibles, ce n'était pas une cantine mais un strapontin.
+//
+// La pièce s'étend donc vers la droite, et une cloison vitrée — celle-là même qu'on
+// a retirée des îlots, où elle mentait sur la taille des équipes — y fait une vraie
+// salle. Le coin café y bascule tout seul : il est ancré au mur de droite, qui vient
+// de reculer. Une cantine avec sa machine à café, c'est ce qu'est un vrai bureau.
+
+// Cloison : bois en bas, verre dépoli en haut. Même facture que les anciennes
+// cloisons d'îlot — on ne jette pas un matériau qui marchait, on le met là où il
+// dit quelque chose de vrai.
+function cloison(px, pz, w, d) {
+  const base = box(w, .78, d, 0x6d4b33); base.position.set(px, .39, pz); scene.add(base);
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(w, .9, d),
+    new THREE.MeshStandardMaterial({ color: 0xd6e4e6, transparent: true, opacity: .2, roughness: .15 }));
+  glass.position.set(px, 1.25, pz); scene.add(glass);
+  const rail = box(w + .06, .07, d + .06, 0x5c3f2a);
+  rail.position.set(px, 1.73, pz); scene.add(rail);
+}
+// La cloison de l'aile, percée d'une ouverture par salle, et les refends qui les
+// séparent. Les tronçons servent aussi à la navigation : marqués d'un bloc, ils
+// mureraient les salles et personne n'irait jamais y mettre les pieds.
+const AILE_SEGMENTS = [];
+for (const s of Object.values(SALLES)) {
+  const [p0, p1] = s.porte;
+  for (const [a, b] of [[s.z0, p0], [p1, s.z1]]) {
+    if (b - a < .05) continue;
+    AILE_SEGMENTS.push([AILE_X, (a + b) / 2, .12, b - a]);
+  }
+  // Refend au fond de la salle. Celui du fond de la pièce est déjà un mur.
+  if (s.z0 > ROOM.back) {
+    AILE_SEGMENTS.push([(AILE_X + ROOM.right) / 2, s.z0, ROOM.right - AILE_X, .12]);
   }
 }
+for (const [x, z, w, d] of AILE_SEGMENTS) cloison(x, z, w, d);
+
+/* ---------- Le coin loisir : baby-foot et billard ---------- */
+// Derrière le salon, dans la même salle. Deux jeux qui se jouent DEBOUT et à
+// plusieurs : c'est ce qui les distingue du canapé, où l'on s'affale seul devant la
+// console. Un bureau se regarde aussi pour ses moments où l'on ne travaille pas.
+const BABY_Z = -7.3, BILLARD_Z = -10.8, JEUX_X = 28;
+const JEU_SPOTS = [];
+
+// Baby-foot : caisse sur quatre pieds, barres en travers, deux joueurs par côté.
+{
+  const caisse = box(1.5, .35, 2.4, 0x7a4a2e); caisse.position.set(JEUX_X, .72, BABY_Z);
+  scene.add(caisse);
+  const tapis = box(1.34, .04, 2.24, 0x2f6b48); tapis.position.set(JEUX_X, .9, BABY_Z);
+  scene.add(tapis);
+  for (const dx of [-.68, .68]) {
+    for (const dz of [-1.1, 1.1]) {
+      const p = box(.12, .55, .12, 0x5c4436); p.position.set(JEUX_X + dx, .27, BABY_Z + dz);
+      scene.add(p);
+    }
+  }
+  // Les barres dépassent de part et d'autre : c'est ce qui le rend reconnaissable.
+  for (const dz of [-.75, -.25, .25, .75]) {
+    const b = box(2.1, .05, .05, 0xb9b2a6, { metalness: .5, roughness: .4 });
+    b.position.set(JEUX_X, .98, BABY_Z + dz); scene.add(b);
+  }
+  for (const dz of [-.5, .5]) {
+    for (const dx of [-.42, .42]) {
+      JEU_SPOTS.push({ pos: new V3(JEUX_X + dx, 0, BABY_Z + dz * 2.6), kind: 'baby', busy: false,
+        face: Math.atan2(dx * .2, dz) });
+    }
+  }
+}
+
+// Billard : tapis vert, bandes, six poches. On tourne autour, d'où des places aux
+// quatre coins plutôt qu'en vis-à-vis.
+{
+  const corps = box(3.0, .55, 1.7, 0x6d4b33); corps.position.set(JEUX_X, .52, BILLARD_Z);
+  scene.add(corps);
+  const tapis = box(2.74, .05, 1.44, 0x2f6b48); tapis.position.set(JEUX_X, .82, BILLARD_Z);
+  scene.add(tapis);
+  for (const dx of [-1.3, 1.3]) {
+    for (const dz of [-.65, .65]) {
+      const p = box(.18, .5, .18, 0x5c4436); p.position.set(JEUX_X + dx, .25, BILLARD_Z + dz);
+      scene.add(p);
+    }
+  }
+  for (const [px, pz] of [[-1.3, -.68], [0, -.68], [1.3, -.68], [-1.3, .68], [0, .68], [1.3, .68]]) {
+    const poche = new THREE.Mesh(new THREE.CylinderGeometry(.11, .11, .06, 10),
+      new THREE.MeshStandardMaterial({ color: 0x1a1512, roughness: .9 }));
+    poche.position.set(JEUX_X + px, .84, BILLARD_Z + pz); scene.add(poche);
+  }
+  for (const [cx, cz] of [[-1.0, 0], [1.0, 0], [0, -.4], [0, .4]]) {
+    const bille = new THREE.Mesh(new THREE.SphereGeometry(.075, 10, 8),
+      new THREE.MeshStandardMaterial({ color: cz ? 0xe8e2d6 : (cx < 0 ? 0xc9793b : 0x3b5fc9), roughness: .3 }));
+    bille.position.set(JEUX_X + cx, .9, BILLARD_Z + cz); bille.castShadow = true; scene.add(bille);
+  }
+  for (const [dx, dz] of [[-1.9, -.5], [-1.9, .5], [1.9, -.5], [1.9, .5]]) {
+    JEU_SPOTS.push({ pos: new V3(JEUX_X + dx, 0, BILLARD_Z + dz), kind: 'billard', busy: false,
+      face: Math.atan2(dx, dz) });
+  }
+}
+
+// Trois tables de six, chaises des deux côtés : on déjeune en se parlant, ce que la
+// bande avant ne permettait pas. L'allée de gauche (x 23 → 24,7) dessert les trois.
+const LUNCH_TABLE_X = 26.5;
+const LUNCH_TABLES = [2.0, 5.5, 9.0];
 const LUNCH_SPOTS = [];
-for (const dx of [-2.0, -1.0, 0, 1.0, 2.0]) {
-  const assise = box(.5, .08, .5, 0x7a5a4c);
-  assise.position.set(LUNCH_X + dx, .46, LUNCH_CHAISE_Z); scene.add(assise);
-  const dossier = box(.5, .5, .07, 0x7a5a4c);
-  dossier.position.set(LUNCH_X + dx, .72, LUNCH_CHAISE_Z - .23); scene.add(dossier);
-  for (const [lx, lz] of [[-.2, -.2], [.2, -.2], [-.2, .2], [.2, .2]]) {
-    const l = box(.06, .44, .06, 0x5c4436);
-    l.position.set(LUNCH_X + dx + lx, .22, LUNCH_CHAISE_Z + lz); scene.add(l);
+for (const tz of LUNCH_TABLES) {
+  const top = box(3.6, .1, 1.3, 0xa5784f); top.position.set(LUNCH_TABLE_X, .78, tz);
+  scene.add(top);
+  for (const dx of [-1.6, 1.6]) {
+    for (const dz of [-.45, .45]) {
+      const p = box(.12, .78, .12, 0x6b4e35); p.position.set(LUNCH_TABLE_X + dx, .39, tz + dz);
+      scene.add(p);
+    }
   }
-  LUNCH_SPOTS.push({
-    pos: new V3(LUNCH_X + dx, 0, LUNCH_CHAISE_Z), kind: 'lunch', busy: false,
-    // Tourne vers la table : atan2(moi - cible), comme partout ailleurs ici.
-    face: Math.atan2(0, LUNCH_CHAISE_Z - LUNCH_Z),
-  });
-}
-// Quelques assiettes, pour que la table ne soit pas nue quand personne n'y est.
-for (const dx of [-2.0, 0, 2.0]) {
-  const a = new THREE.Mesh(new THREE.CylinderGeometry(.22, .18, .04, 14),
-    new THREE.MeshStandardMaterial({ color: 0xeee6d8, roughness: .5 }));
-  a.position.set(LUNCH_X + dx, .85, LUNCH_Z - .2); a.castShadow = true; scene.add(a);
+  for (const dz of [-1.15, 1.15]) {
+    for (const dx of [-1.2, 0, 1.2]) {
+      const x = LUNCH_TABLE_X + dx, z = tz + dz;
+      const assise = box(.5, .08, .5, 0x7a5a4c); assise.position.set(x, .46, z); scene.add(assise);
+      const dossier = box(.5, .5, .07, 0x7a5a4c);
+      dossier.position.set(x, .72, z + (dz < 0 ? -.23 : .23)); scene.add(dossier);
+      for (const [lx, lz] of [[-.2, -.2], [.2, -.2], [-.2, .2], [.2, .2]]) {
+        const l = box(.06, .44, .06, 0x5c4436); l.position.set(x + lx, .22, z + lz); scene.add(l);
+      }
+      // Tourne vers la table : atan2(moi - cible), comme partout ailleurs ici.
+      LUNCH_SPOTS.push({ pos: new V3(x, 0, z), kind: 'lunch', busy: false,
+        face: Math.atan2(0, dz) });
+    }
+  }
+  // Deux assiettes par table, pour qu'elle ne soit pas nue quand personne n'y est.
+  for (const dx of [-1.1, 1.1]) {
+    const a = new THREE.Mesh(new THREE.CylinderGeometry(.22, .18, .04, 14),
+      new THREE.MeshStandardMaterial({ color: 0xeee6d8, roughness: .5 }));
+    a.position.set(LUNCH_TABLE_X + dx, .85, tz); a.castShadow = true; scene.add(a);
+  }
 }
 
 // Heure courante, tenue a jour par la boucle de rendu. claimLeisure() en a besoin
@@ -734,9 +887,13 @@ const MIDI = [12, 14];
 // qu'a dix-huit heures.
 function claimLeisure(avoid) {
   const seated = avoid === 'couch' ? [COFFEE_SPOTS, COUCH_SPOTS] : [COUCH_SPOTS, COFFEE_SPOTS];
+  // Les jeux passent après le canapé et le bar, mais avant les places debout : on
+  // préfère une partie de baby-foot à rester planté à discuter, et les places debout
+  // restent ce qu'elles ont toujours été — le dernier recours qui évite que
+  // quelqu'un se retrouve immobile au milieu de la pièce.
   const pools = HEURE >= MIDI[0] && HEURE < MIDI[1]
-    ? [LUNCH_SPOTS, ...seated, STAND_SPOTS]
-    : [...seated, STAND_SPOTS];
+    ? [LUNCH_SPOTS, ...seated, JEU_SPOTS, STAND_SPOTS]
+    : [...seated, JEU_SPOTS, STAND_SPOTS];
   for (const pool of pools) {
     const k = pool.find((p) => !p.busy);
     if (k) { k.busy = true; return k; }
@@ -752,22 +909,32 @@ coffeeRug.receiveShadow = true; scene.add(coffeeRug);
 // Baie serveurs, dans l'angle du fond a droite. Trois armoires : seule celle du
 // milieu est branchee sur les donnees — une LED par commande shell encore en cours
 // (background_tasks des hooks). Les deux autres ne sont que du decor qui respire.
-const RACK_X = wallR(1.8), RACK_Z = wallB(.75), RACK_LEDS = 8;
+// La baie a désormais SA salle, au fond de l'aile. Deux rangées d'armoires, comme
+// une vraie salle machine : on en met huit là où trois flottaient contre un mur.
+//
+// Une seule reste branchée sur les données, et c'est volontaire — une salle serveur
+// où tout clignote en rythme ne dirait plus rien de ce qui tourne vraiment. Les sept
+// autres gardent leurs veilleuses fixes.
+const RACK_X = (AILE_X + ROOM.right) / 2, RACK_Z = -16.5, RACK_Z2 = -21.5;
+const RACK_LEDS = 8;
 const rackLeds = [];
-for (const cx of [RACK_X - 1.25, RACK_X, RACK_X + 1.25]) {
-  const live = cx === RACK_X;
-  const body = box(1.15, 2.0, .85, 0x2a2420); body.position.set(cx, 1.0, RACK_Z); scene.add(body);
-  const top = box(1.25, .08, .95, 0x3a322c); top.position.set(cx, 2.04, RACK_Z); scene.add(top);
+for (const [cx, cz] of [
+  [RACK_X - 1.9, RACK_Z], [RACK_X - .63, RACK_Z], [RACK_X + .63, RACK_Z], [RACK_X + 1.9, RACK_Z],
+  [RACK_X - 1.9, RACK_Z2], [RACK_X - .63, RACK_Z2], [RACK_X + .63, RACK_Z2], [RACK_X + 1.9, RACK_Z2],
+]) {
+  const live = cx === RACK_X - .63 && cz === RACK_Z;
+  const body = box(1.15, 2.0, .85, 0x2a2420); body.position.set(cx, 1.0, cz); scene.add(body);
+  const top = box(1.25, .08, .95, 0x3a322c); top.position.set(cx, 2.04, cz); scene.add(top);
   // Grille d'aeration et poignee : sans elles, une armoire n'est qu'un bloc noir.
   for (let i = 0; i < 4; i++) {
     const vent = box(.8, .05, .02, 0x15110f);
-    vent.position.set(cx, .26 + i * .13, RACK_Z + .44); scene.add(vent);
+    vent.position.set(cx, .26 + i * .13, cz + .44); scene.add(vent);
   }
   const handle = box(.09, .3, .07, 0x6a615a, { metalness: .5, roughness: .4 });
-  handle.position.set(cx + .44, 1.52, RACK_Z + .45); scene.add(handle);
+  handle.position.set(cx + .44, 1.52, cz + .45); scene.add(handle);
   for (let i = 0; i < RACK_LEDS; i++) {
     const led = box(.5, .07, .02, 0x1e1a17, { emissive: 0x000000 });
-    led.position.set(cx, 1.82 - i * .2, RACK_Z + .44); scene.add(led);
+    led.position.set(cx, 1.82 - i * .2, cz + .44); scene.add(led);
     // Les voisines gardent quelques veilleuses fixes : la salle machine vit, mais
     // seul le rack du milieu dit quelque chose de vrai sur les sessions.
     if (live) rackLeds.push(led); else if (i % 3 === 0) led.material.emissive.setHex(0x2f6b48);
@@ -1055,7 +1222,7 @@ const CAT_LANE_Z = COUCH_LANE_Z;
 const CAT_SPOTS = [
   { pos: new V3(LOUNGE_X + .9, .99, LOUNGE_Z - .53), face: Math.PI, sleep: true },  // dossier du canape
   { pos: new V3(LOUNGE_X - 1.8, .81, LOUNGE_Z), face: Math.PI, sleep: false },      // accoudoir
-  { pos: new V3(LOUNGE_X, .47, 9.85), face: 0, sleep: false },                      // table basse
+  { pos: new V3(LOUNGE_X, .47, LOUNGE_Z + 1.4), face: 0, sleep: false },            // table basse
   { pos: new V3(LOUNGE_X - 1.3, .03, 9.95), face: Math.PI, sleep: true },           // tapis, devant la tele
   { pos: new V3(-5.5, .02, 9.3), face: -Math.PI / 2, sleep: false },                // parquet, pres des places debout
 ];
@@ -1261,7 +1428,7 @@ function makeDesk(parent, x, z) {
 // grandit que vers le fond, son centre n'est plus z = 0. `-ROOM.d / 2` decalerait
 // toute la grille de la moitie de ce qu'on a ajoute : les agents contourneraient des
 // meubles absents et traverseraient ceux qui sont la.
-const NAV = { cell: .2, pad: .22, x0: -ROOM.w / 2, z0: ROOM.back };
+const NAV = { cell: .2, pad: .22, x0: ROOM.left, z0: ROOM.back };
 NAV.cols = Math.round(ROOM.w / NAV.cell);
 NAV.rows = Math.round(ROOM.d / NAV.cell);
 let navGrid = null; // Uint8Array, 1 = bloque
@@ -1278,12 +1445,18 @@ const STATIC_OBSTACLES = [
   // Canape et table basse : marge mince. La voie qui les separe (z = 9,35) ne fait
   // que 35 cm — c'est par elle qu'on gagne sa place. Une marge pleine la fermerait.
   [LOUNGE_X, LOUNGE_Z, 3.9, 1.4, .05],
-  [LOUNGE_X, 9.85, 1.7, .7, .05],
+  [LOUNGE_X, LOUNGE_Z + 1.4, 1.7, .7, .05],
   [LOUNGE_X, TV_Z, 2.0, .52],             // televiseur et console
-  [RACK_X, RACK_Z, 3.65, .85],            // les trois armoires de la baie
-  // Table du midi. Les chaises sont a 1,25 du centre, le plateau fait 0,65 de
-  // demi-profondeur : avec la marge de 0,22 de la grille, elles restent accessibles.
-  [LUNCH_X, LUNCH_Z, 5.2, 1.3],
+  [RACK_X, RACK_Z, 5.2, .85], [RACK_X, RACK_Z2, 5.2, .85], // les deux rangees de la baie
+  // Les trois tables de la cantine. Les chaises sont a 1,15 du centre, le plateau
+  // fait 0,65 de demi-profondeur : avec la marge de 0,22 de la grille, elles restent
+  // accessibles, et il reste 1,76 de passage entre deux tables.
+  ...LUNCH_TABLES.map((z) => [LUNCH_TABLE_X, z, 3.6, 1.3]),
+  [JEUX_X, BABY_Z, 1.5, 2.4],             // baby-foot
+  [JEUX_X, BILLARD_Z, 3.0, 1.7],          // billard
+  // Les cloisons de l'aile, troncon par troncon : les ouvertures doivent rester
+  // praticables, sinon les trois salles sont murees et personne n'y va jamais.
+  ...AILE_SEGMENTS,
   [wallR(17.0), wallB(1.7), .85, .85],    // plantes
   [wallL(2.1), wallB(1.4), .68, .68],
   [-7.4, wallF(.4), .58, .58],
@@ -1436,23 +1609,6 @@ function findPath(from, to) {
 }
 
 /* ---------- Îlots : un par session, nommé d'après le projet ---------- */
-// Grille d'emplacements — 5 colonnes × 4 rangées = 20 sessions simultanées visibles.
-//
-// Les rangées vont par PAIRES. Chaque paire encadre une allée, et les deux rangées
-// s'ouvrent dessus ; entre deux paires, les îlots se tournent le dos. C'est ce qui
-// permet d'ajouter des rangées sans ajouter des allées : quatre rangées, deux allées.
-// L'écart de 9 à l'intérieur d'une paire laisse la place d'y marcher (6,1 d'îlot +
-// 2,9 d'allée) ; l'écart de 7,5 entre deux paires n'est qu'un interstice, comme
-// entre deux colonnes.
-//
-// L'ordre compte : la rangée la plus proche de la caméra vient en premier, donc une
-// maison peu chargée s'installe au premier plan plutôt qu'au fond.
-const POD_X = [-13.5, -6, 1.5, 9, 16.5];
-const POD_Z = [4.5, -4.5, -12, -21];
-// Les allées, et la façon de trouver la sienne. Tout déplacement passe par une allée
-// puis par le couloir de gauche, qui les relie toutes.
-const AISLES = [0, -16.5];
-const aisleFor = (z) => AISLES.reduce((a, b) => (Math.abs(b - z) < Math.abs(a - z) ? b : a));
 // Bureaux d'un ilot. L'ordre d'attribution est recalcule par ilot (cote ouvert
 // d'abord), si bien que le lead s'assoit toujours face a l'allee.
 // Nombre maximal de bureaux par ilot. Limite d'emprise au sol : avec des colonnes
@@ -2617,6 +2773,8 @@ const LEISURE_ACT = {
   coffee: ['coffee', '☕ au mange-debout'],
   stand: ['idle', '🧍 discute près du salon'],
   lunch: ['coffee', '🍽️ déjeune'],
+  baby: ['game', '⚽ au baby-foot'],
+  billard: ['game', '🎱 au billard'],
 };
 
 // Reconstitue un employé que le serveur a gardé en mémoire. Il était déjà dans la

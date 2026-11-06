@@ -167,11 +167,11 @@ src = src.replace(/^\s*import .*?;\s*$/gm, '');
 // ajoute un epilogue qui expose les constantes de plan dont le test a besoin —
 // plutot que de recopier des coordonnees dans le test, ou elles divergeraient.
 src += '\n;globalThis.__plan = { ROOM, POD_X, POD_Z, AISLES, aisleFor, NAV,'
-  + ' COFFEE, RACK_Z, STAND_SPOTS, COFFEE_SPOTS, DOOR, LUNCH_Z, LUNCH_CHAISE_Z };'
+  + ' COFFEE, RACK_Z, STAND_SPOTS, COFFEE_SPOTS, DOOR, CANTINE, LUNCH_TABLE_X, LUNCH_TABLES, RACK_Z2, SALLES, AILE_X };'
   + '\n;globalThis.__vie = { sessions, applyEndOfDay, applyBlockPause, USAGE, handle };'
   + '\n;globalThis.__cadrer = framePods;'
   + '\n;globalThis.__midi = { claimLeisure, LUNCH_SPOTS, poser: (h) => { HEURE = h; } };'
-  + '\n;globalThis.__places = { COFFEE_SPOTS, COUCH_SPOTS, STAND_SPOTS, LUNCH_SPOTS,'
+  + '\n;globalThis.__places = { COFFEE_SPOTS, COUCH_SPOTS, STAND_SPOTS, LUNCH_SPOTS, JEU_SPOTS,'
   + ' buildNav, navCell, DOOR };'
   + '\n;globalThis.__cam = () => ({ cible: { x: camTarget.x, z: camTarget.z }, span: camSpan,'
   + ' ilots: [...pods].map((p) => ({ x: p.slot.x, z: p.slot.z })) });';
@@ -226,7 +226,7 @@ check(LOOPS.length === 1, 'la boucle de rendu est bien installee');
     let dedans = true, chevauche = null, sansAllee = null;
     for (const x of POD_X) {
       for (const z of POD_Z) {
-        if (x - HALF < -ROOM.w / 2 || x + HALF > ROOM.w / 2) dedans = false;
+        if (x - HALF < ROOM.left || x + HALF > ROOM.right) dedans = false;
         if (z - HALF < ROOM.back || z + HALF > ROOM.front) dedans = false;
         // Le portillon doit tomber dans l allee de l ilot, pas dans le vide.
         const a = aisleFor(z);
@@ -258,9 +258,9 @@ check(LOOPS.length === 1, 'la boucle de rendu est bien installee');
     // grille — les agents contourneraient des meubles absents et traverseraient ceux
     // qui sont la. Rien ne le signalerait : l'A* trouve toujours un chemin.
     const NAV = G('NAV');
-    check(Math.abs(NAV.x0 - (-ROOM.w / 2)) < 1e-9 && Math.abs(NAV.z0 - ROOM.back) < 1e-9,
+    check(Math.abs(NAV.x0 - ROOM.left) < 1e-9 && Math.abs(NAV.z0 - ROOM.back) < 1e-9,
       'la grille de navigation part bien du coin de la piece',
-      { x0: NAV.x0, z0: NAV.z0, attendu: { x0: -ROOM.w / 2, z0: ROOM.back } });
+      { x0: NAV.x0, z0: NAV.z0, attendu: { x0: ROOM.left, z0: ROOM.back } });
     check(Math.abs(NAV.cols * NAV.cell - ROOM.w) < NAV.cell
       && Math.abs(NAV.rows * NAV.cell - ROOM.d) < NAV.cell,
       'la grille de navigation couvre toute la piece',
@@ -270,9 +270,19 @@ check(LOOPS.length === 1, 'la boucle de rendu est bien installee');
     check(G('COFFEE').z > Math.max(...POD_Z) + HALF,
       'le coin cafe reste devant la premiere rangee');
 
-    // La baie serveurs est au fond a droite, derriere la derniere rangee.
-    check(G('RACK_Z') + .45 < Math.min(...POD_Z) - HALF,
-      'la baie serveurs ne mord pas sur la rangee du fond');
+    // La baie est partie dans sa salle, a cote des ilots et non plus derriere eux :
+    // un test sur le seul z ne dit plus rien. On verifie le chevauchement reel.
+    const boitesSeCroisent = (ax, az, aw, ad, bx, bz, bw, bd) =>
+      Math.abs(ax - bx) < (aw + bw) / 2 && Math.abs(az - bz) < (ad + bd) / 2;
+    const mordus = [];
+    for (const rz of [G('RACK_Z'), G('RACK_Z2')]) {
+      for (const x of POD_X) {
+        for (const z of POD_Z) {
+          if (boitesSeCroisent(G('RACK_X'), rz, 5.2, .85, x, z, HALF * 2, HALF * 2)) mordus.push(x + ',' + z);
+        }
+      }
+    }
+    check(mordus.length === 0, 'la baie serveurs ne mord sur aucun ilot', mordus);
 
     // Le point d arrivee doit etre dans la piece ET hors de tout ilot. Reste fixe
     // pendant que les murs bougent, il atterrit au milieu du parquet — ou pire, a
@@ -284,23 +294,23 @@ check(LOOPS.length === 1, 'la boucle de rendu est bien installee');
         if (Math.abs(DOOR.x - x) < HALF && Math.abs(DOOR.z - z) < HALF) porteDansIlot = true;
       }
     }
-    check(!porteDansIlot && DOOR.x > -ROOM.w / 2 && DOOR.x < ROOM.w / 2
+    check(!porteDansIlot && DOOR.x > ROOM.left && DOOR.x < ROOM.right
       && DOOR.z > ROOM.back && DOOR.z < ROOM.front,
       'la porte est dans la piece et hors de tout ilot',
       { x: DOOR.x, z: DOOR.z });
 
-    // La bande avant ne fait que 3,3 entre la premiere rangee et le mur. Tout ce
-    // qu on y pose doit laisser le passage : c est la que vivent le cafe, le salon,
-    // les places debout et la table du midi, et c est la seule bande libre de la
-    // piece. Un ilot qui gagne quinze centimetres les prend a elle.
-    const dosIlot = Math.max(...POD_Z) + 3.05;
-    const chaise = G('LUNCH_CHAISE_Z') - .25;
-    check(chaise - dosIlot > .6,
-      'la table du midi laisse le passage derriere les ilots',
-      { dosIlot, bordChaise: chaise, passage: +(chaise - dosIlot).toFixed(2) });
-    check(G('LUNCH_Z') + .65 < ROOM.front,
-      'et elle ne traverse pas le mur avant',
-      { bordTable: G('LUNCH_Z') + .65, mur: ROOM.front });
+    // La cantine est une piece a part, derriere sa cloison. Ses tables doivent y
+    // etre entierement — une table a cheval sur la cloison serait coupee en deux —
+    // et la cloison doit rester a droite des ilots, sinon elle murerait une colonne.
+    const CANTINE = G('CANTINE'), TX = G('LUNCH_TABLE_X'), TZ = G('LUNCH_TABLES');
+    check(CANTINE.x > Math.max(...POD_X) + HALF,
+      'la cloison de la cantine passe a droite des ilots',
+      { cloison: CANTINE.x, bordIlot: Math.max(...POD_X) + HALF });
+    const debordent = TZ.filter((z) => TX - 1.8 < CANTINE.x || TX + 1.8 > ROOM.right
+      || z - 1.4 < CANTINE.z || z + 1.4 > ROOM.front);
+    check(debordent.length === 0, 'les trois tables tiennent dans la cantine', debordent);
+    check(TZ.length === 3 && G('LUNCH_TABLES').length * 6 === 18,
+      'dix-huit places a table', TZ.length * 6);
   }
 }
 
@@ -465,7 +475,8 @@ if (!STREAM) {
     const APPROCHE = 1.6;
     const loinDeTout = [];
     for (const [nom, pool] of [['bar', pl.COFFEE_SPOTS], ['canape', pl.COUCH_SPOTS],
-      ['places debout', pl.STAND_SPOTS], ['table du midi', pl.LUNCH_SPOTS]]) {
+      ['places debout', pl.STAND_SPOTS], ['table du midi', pl.LUNCH_SPOTS],
+      ['jeux', pl.JEU_SPOTS]]) {
       check(pool.length > 0, 'le pool « ' + nom + ' » n est pas vide', pool.length);
       for (const p of pool) {
         let mini = Infinity;
@@ -485,6 +496,42 @@ if (!STREAM) {
       'chaque place de repos a une case libre a portee de pas', loinDeTout);
     check(!grille[pl.navCell(pl.DOOR.x, pl.DOOR.z)],
       'la porte d entree n est pas muree', { x: pl.DOOR.x, z: pl.DOOR.z });
+
+    // ATTEINDRE n est pas APPROCHER. Les deux verifications precedentes passeraient
+    // sur une cantine entierement muree : ses sieges auraient des cases libres tout
+    // autour — a l interieur. Seul un parcours depuis la porte d entree dit si
+    // l ouverture de la cloison est reellement praticable.
+    const NAV = globalThis.__plan.NAV;
+    const vus = new Uint8Array(NAV.cols * NAV.rows);
+    const depart = pl.navCell(pl.DOOR.x, pl.DOOR.z);
+    const file = [depart]; vus[depart] = 1;
+    for (let k = 0; k < file.length; k++) {
+      const c = file[k], i = c % NAV.cols, j = (c / NAV.cols) | 0;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ni = i + di, nj = j + dj;
+        if (ni < 0 || nj < 0 || ni >= NAV.cols || nj >= NAV.rows) continue;
+        const n = nj * NAV.cols + ni;
+        if (vus[n] || grille[n]) continue;
+        vus[n] = 1; file.push(n);
+      }
+    }
+    const injoignables = [];
+    for (const [nom, pool] of [['bar', pl.COFFEE_SPOTS], ['canape', pl.COUCH_SPOTS],
+      ['places debout', pl.STAND_SPOTS], ['table du midi', pl.LUNCH_SPOTS]]) {
+      for (const p of pool) {
+        // La case du siege peut etre bloquee (on s assoit DANS le meuble) : on
+        // cherche une case atteinte juste a cote, celle ou findPath nous deposera.
+        let ok = false;
+        for (let dx = -1.4; dx <= 1.4 && !ok; dx += .2) {
+          for (let dz = -1.4; dz <= 1.4 && !ok; dz += .2) {
+            if (vus[pl.navCell(p.pos.x + dx, p.pos.z + dz)]) ok = true;
+          }
+        }
+        if (!ok) injoignables.push(nom + ' (' + p.pos.x.toFixed(1) + ',' + p.pos.z.toFixed(1) + ')');
+      }
+    }
+    check(injoignables.length === 0,
+      'toute place de repos est joignable a pied depuis la porte', injoignables);
   }
 }
 
